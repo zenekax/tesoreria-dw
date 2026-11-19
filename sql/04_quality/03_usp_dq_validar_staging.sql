@@ -13,11 +13,8 @@
           - fila en cuarentena que ya no falla (se corrigió y se recargó) -> LIBERADA
         Nada se borra: la cuarentena es el historial de lo observado.
 
-   Reglas de consistencia entre fuentes (pago/cobranza vs. extracto): buscan la
-   contrapartida en la misma cuenta, con el mismo importe (tolerancia de USD 50 en
-   cuentas en dólares por comisiones SWIFT descontadas) y dentro de los 7 días. Los
-   movimientos de los últimos @dias_transito días antes del corte no se evalúan: pueden
-   estar en tránsito (el banco los imputa en el extracto siguiente).
+   Las reglas de consistencia entre fuentes (pago/cobranza vs. extracto) no están acá: se
+   evalúan después de la conciliación (04_usp_dq_controles_post_carga.sql).
    ============================================================================= */
 SET NOCOUNT ON;
 USE [$(DB_NAME)];
@@ -25,8 +22,7 @@ GO
 
 CREATE OR ALTER PROCEDURE audit.usp_dq_validar_staging
     @ejecucion_id  UNIQUEIDENTIFIER = NULL,
-    @fecha_corte   DATE = NULL,      -- default: último día del último extracto informado
-    @dias_transito INT  = 5
+    @fecha_corte   DATE = NULL       -- default: último día del último extracto informado
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -39,7 +35,6 @@ BEGIN
         IF @fecha_corte IS NULL
             SELECT @fecha_corte = EOMONTH(MAX(TRY_CONVERT(DATE, period + '-01', 23))) FROM stg.bank_balances;
         SET @fecha_corte = ISNULL(@fecha_corte, CAST(SYSUTCDATETIME() AS DATE));
-        DECLARE @limite_transito DATE = DATEADD(DAY, -@dias_transito, @fecha_corte);
 
         -- COLLATE DATABASE_DEFAULT: una tabla #temporal creada con CREATE TABLE toma la collation de
         -- tempdb (la del servidor), no la de esta base; sin esto, los JOIN de texto contra tablas de la
@@ -196,66 +191,10 @@ BEGIN
         FROM #ext WHERE cuenta_id IS NOT NULL AND (currency IS NULL OR currency <> moneda_cuenta);
 
         /* ------------------------------------------------ consistencia ERP vs. banco
-           #erp: pagos y cobranzas con su banda de importe aceptable en el extracto.
-             pago:     el banco debita importe + comisión  -> [monto, monto + tolerancia]
-             cobranza: el banco acredita importe - comisión -> [monto - tolerancia, monto]
-           Se compara en valor absoluto y sin mirar la moneda: si el ERP tiene el signo o la
-           moneda mal, eso ya lo marca otra regla; acá solo interesa si el dinero se movió. */
-        SELECT 'PAGO' AS tipo, _row_id, _source_file, _source_line, payment_id AS clave, account_id AS cuenta_id,
-               ABS(monto) AS monto_abs, fecha, payment_reference AS referencia,
-               -- fecha confiable: válida y no posterior al corte (una fecha futura ya se sabe que es falsa)
-               IIF(fecha <= @fecha_corte, fecha, NULL) AS fecha_ok,
-               ABS(monto) - 0.01 AS lim_inf, ABS(monto) + IIF(moneda_cuenta = 'USD', 50.00, 0.01) AS lim_sup
-        INTO #erp FROM #pag WHERE monto IS NOT NULL
-        UNION ALL
-        SELECT 'COBRANZA', _row_id, _source_file, _source_line, collection_id, account_id, ABS(monto), fecha,
-               collection_reference, IIF(fecha <= @fecha_corte, fecha, NULL), ABS(monto) - IIF(moneda_cuenta = 'USD', 50.00, 0.01), ABS(monto) + 0.01
-        FROM #cob WHERE monto IS NOT NULL;
-        CREATE INDEX ix_erp ON #erp (cuenta_id, tipo, monto_abs) INCLUDE (fecha_ok, lim_inf, lim_sup);
-
-        SELECT _row_id, _source_file, _source_line, statement_line_id AS clave, cuenta_id,
-               IIF(bank_tx_code = 'TRF_OUT', 'PAGO', 'COBRANZA') AS tipo, ABS(monto) AS monto_abs, f_imp, description
-        INTO #trf FROM #ext WHERE nro = 1 AND bank_tx_code IN ('TRF_IN', 'TRF_OUT');
-        CREATE INDEX ix_trf ON #trf (cuenta_id, tipo, monto_abs) INCLUDE (f_imp);
-
-        -- Pagos/cobranzas sin movimiento en el banco. NO se marcan si hay:
-        -- (a) una línea con importe en la banda y fecha dentro de los 7 días (o con la fecha rota);
-        -- (b) una línea SIN importe (rota) en la misma cuenta y ventana: no se puede concluir que
-        --     falte el movimiento; esa línea ya va a cuarentena por EXT_MONTO_NULO.
-        -- El "BETWEEN monto - 50 AND monto + 50" es redundante con la banda, pero hace la
-        -- condición SARGable: permite buscar por índice en vez de recorrer toda la cuenta.
-        SELECT e.* INTO #erp_eval FROM #erp e
-        WHERE e.fecha IS NOT NULL AND e.fecha <= @limite_transito AND e.cuenta_id IS NOT NULL;
-        INSERT INTO #evaluadas SELECT 'PAG_SIN_EXTRACTO', COUNT(*) FROM #erp_eval WHERE tipo = 'PAGO';
-        INSERT INTO #evaluadas SELECT 'COB_SIN_EXTRACTO', COUNT(*) FROM #erp_eval WHERE tipo = 'COBRANZA';
-        INSERT INTO #err
-        SELECT IIF(e.tipo = 'PAGO', 'PAG_SIN_EXTRACTO', 'COB_SIN_EXTRACTO'), IIF(e.tipo = 'PAGO', 'payments', 'collections'),
-               e._row_id, e._source_file, e._source_line, e.clave, CONCAT(e.monto_abs, N' el ', CONVERT(CHAR(10), e.fecha, 23))
-        FROM #erp_eval e
-        WHERE NOT EXISTS (SELECT 1 FROM #trf t
-                          WHERE t.cuenta_id = e.cuenta_id AND t.tipo = e.tipo
-                            AND t.monto_abs BETWEEN e.monto_abs - 50 AND e.monto_abs + 50
-                            AND t.monto_abs BETWEEN e.lim_inf AND e.lim_sup
-                            AND (t.f_imp IS NULL OR t.f_imp BETWEEN e.fecha AND DATEADD(DAY, 7, e.fecha)))
-          AND NOT EXISTS (SELECT 1 FROM #trf t
-                          WHERE t.cuenta_id = e.cuenta_id AND t.tipo = e.tipo AND t.monto_abs IS NULL
-                            AND t.f_imp BETWEEN e.fecha AND DATEADD(DAY, 7, e.fecha));
-
-        -- Transferencias del banco sin pago/cobranza en el ERP (solo líneas sanas: las rotas ya
-        -- las marcó otra regla). Si la fecha del ERP no es confiable (rota o futura), alcanza con
-        -- cuenta + importe.
-        INSERT INTO #evaluadas
-        SELECT 'EXT_SIN_MATCH', COUNT(*) FROM #trf WHERE monto_abs IS NOT NULL AND f_imp IS NOT NULL AND cuenta_id IS NOT NULL;
-        INSERT INTO #err
-        SELECT 'EXT_SIN_MATCH', 'bank_statements', t._row_id, t._source_file, t._source_line, t.clave,
-               CONCAT(IIF(t.tipo = 'PAGO', N'-', N'+'), t.monto_abs, N' el ', CONVERT(CHAR(10), t.f_imp, 23))
-        FROM #trf t
-        WHERE t.monto_abs IS NOT NULL AND t.f_imp IS NOT NULL AND t.cuenta_id IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM #erp e
-                          WHERE e.cuenta_id = t.cuenta_id AND e.tipo = t.tipo
-                            AND e.monto_abs BETWEEN t.monto_abs - 50 AND t.monto_abs + 50
-                            AND t.monto_abs BETWEEN e.lim_inf AND e.lim_sup
-                            AND (e.fecha_ok IS NULL OR t.f_imp BETWEEN e.fecha_ok AND DATEADD(DAY, 7, e.fecha_ok)));
+           (PAG_SIN_EXTRACTO, COB_SIN_EXTRACTO, EXT_SIN_MATCH) se evalúan DESPUÉS de la
+           conciliación, en 04_usp_dq_controles_post_carga.sql: usan su emparejamiento 1 a 1.
+           Una búsqueda de "¿existe algún movimiento parecido?" acá perdía detecciones con
+           volumen alto (a escala 20, otro movimiento de la misma cuenta coincidía de casualidad). */
 
         /* ------------------------------------------------ tipos de cambio */
         SELECT s._row_id, s._source_file, s._source_line, s.rate_date, s.currency, s.rate_per_usd,
