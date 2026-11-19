@@ -11,7 +11,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | Fase | Contenido | Estado |
 |---|---|---|
 | 0 | Entorno: Docker, Python, Git | ✅ |
-| 1 | Datos sintéticos con errores inyectados | ⏳ |
+| 1 | Datos sintéticos con errores inyectados | ✅ |
 | 2 | Staging (`stg`) | ⏳ |
 | 3 | Modelo dimensional (`dw`) | ⏳ |
 | 4 | ETL en T-SQL | ⏳ |
@@ -68,6 +68,16 @@ Crear la base y los schemas (idempotente, se puede correr varias veces):
 docker exec tesoreria-sql sh -c '/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -b -i /sql/00_setup/01_crear_base_y_schemas.sql'
 ```
 
+Generar los datos sintéticos (12 meses, seed fija, 174 errores inyectados) y correr los tests:
+
+```bash
+python python/generar_datos.py
+```
+
+```bash
+python -m pytest python/tests -q
+```
+
 Verificar que Python llega a la base:
 
 ```bash
@@ -82,9 +92,12 @@ docker-compose.yml     SQL Server 2022 CU28 (tag fijo), volumen persistente, ./s
 requirements.txt       dependencias Python con versión fija
 python/db.py           conexión compartida (lee credenciales de .env)
 python/verificar_entorno.py
+python/generar_datos.py ERP + bancos sintéticos -> data/ (ver docs/datos-sinteticos.md)
+python/tests/          tests de reproducibilidad y exactitud del manifiesto de errores
 scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempotente)
 sql/00_setup/          base TesoreriaDW + schemas stg, dw, audit, sec
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
+docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 ```
 
 ## Decisiones de la Fase 0
@@ -99,3 +112,25 @@ docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 - **Workaround de OpenSSL acotado al venv** en vez de cambiar el OpenSSL del sistema: no rompe
   otros programas que ya usan OpenSSL 4.
 - Por ahora los scripts se conectan como `sa`; en la Fase 8 se crean usuarios con mínimo privilegio.
+
+## Fase 1: datos sintéticos
+
+`python/generar_datos.py` simula el ERP y los bancos de la fintech: facturas AP/AR, pagos, cobranzas,
+extractos bancarios, saldos y tipos de cambio, en **archivos mensuales** (como llegan los extractos).
+Detalle completo en [docs/datos-sinteticos.md](docs/datos-sinteticos.md).
+
+| | Escala 1 |
+|---|---|
+| Facturas / pagos / cobranzas | 6.008 / 2.795 / 2.577 |
+| Líneas de extracto | 6.440 (transferencias, comisiones, impuesto Ley 25.413, FX) |
+| Errores inyectados | **174** en 12 categorías, uno por fila, con archivo y línea en `data/_verdad/errores_inyectados.json` |
+| Anomalías de negocio | 5 pagos atípicos, 3 posibles dobles pagos |
+| Tiempo de generación | < 1 s (escala 20: ~11 s, 120 mil facturas) |
+
+Decisiones principales:
+- **Seed fija y salida determinística**: dos corridas dan archivos idénticos byte a byte (test).
+- **Manifiesto exacto**: los tests verifican que cada error está donde dice *y* que toda fila fuera del
+  manifiesto está limpia. Así la Fase 5 puede medir falsos positivos y falsos negativos, no solo "detectó algo".
+- **Realismo de conciliación**: desfase de fechas, referencias parciales, comisiones descontadas del monto y
+  partidas en tránsito. La respuesta correcta está en `data/_verdad/conciliacion_esperada.csv`.
+- **Dos snapshots del maestro de contrapartes** (nov-25 y may-26) con cambios de riesgo, plazo y segmento para el SCD2.
