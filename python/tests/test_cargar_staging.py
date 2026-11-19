@@ -30,7 +30,7 @@ TABLAS = ["banks", "bank_accounts", "counterparties", "fx_rates", "invoices", "p
 
 
 @pytest.fixture(scope="module")
-def entorno(base_test, tmp_path_factory):
+def entorno(base_limpia, tmp_path_factory):
     datos = tmp_path_factory.mktemp("datos")
     manifiesto = gd.generar(datos, escala=0.3)
     yield datos, manifiesto
