@@ -14,7 +14,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 1 | Datos sintéticos con errores inyectados | ✅ |
 | 2 | Staging (`stg`) | ✅ |
 | 3 | Modelo dimensional (`dw`) | ✅ |
-| 4 | ETL en T-SQL | ⏳ |
+| 4 | ETL en T-SQL | ✅ |
 | 5 | Calidad de datos | ⏳ |
 | 6 | Conciliación y análisis | ⏳ |
 | 7 | Performance | ⏳ |
@@ -64,7 +64,7 @@ docker compose up -d --wait
 ./scripts/setup_python.sh && source .venv/bin/activate
 ```
 
-Desplegar la base (base, schemas, usuario ETL, staging y modelo dimensional; idempotente):
+Desplegar la base (base, schemas, usuario ETL, staging, modelo dimensional y procedimientos del ETL; idempotente):
 
 ```bash
 scripts/run_sql.sh
@@ -78,6 +78,12 @@ python python/generar_datos.py
 
 ```bash
 python python/cargar_staging.py
+```
+
+Transformar y cargar el DW (stored procedures; incremental por defecto, `--completa` para reprocesar todo):
+
+```bash
+python python/ejecutar_etl.py
 ```
 
 Correr los tests (los de staging usan una base aparte, `TesoreriaDW_test`, que se crea y se borra):
@@ -102,6 +108,7 @@ python/db.py           conexión compartida (lee credenciales de .env)
 python/verificar_entorno.py
 python/generar_datos.py ERP + bancos sintéticos -> data/ (ver docs/datos-sinteticos.md)
 python/cargar_staging.py  CSV -> stg.* con pyodbc (fast_executemany), idempotente por archivo
+python/ejecutar_etl.py    dispara dw.usp_run_etl con el usuario de mínimo privilegio
 python/tests/          tests del generador y de la carga (integración contra TesoreriaDW_test)
 scripts/run_sql.sh     ejecuta los .sql en orden con el sqlcmd del contenedor (variables SQLCMD)
 scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempotente)
@@ -109,6 +116,7 @@ scripts/_tdw_openssl.py  relanzador que instala setup_python.sh en el venv (solo
 sql/00_setup/          base + schemas stg, dw, audit, sec + login tdw_etl / rol_etl
 sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
 sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y datos de referencia
+sql/03_etl/             audit.etl_log, marcas de agua, dw.usp_load_* y el orquestador dw.usp_run_etl
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
@@ -209,3 +217,55 @@ Decisiones principales:
 Verificado: 56 tests (estructura, calendario, datos estáticos y 27 reglas probadas con **control positivo**:
 la fila válida entra y la misma fila con un campo roto falla con el código esperado). Contraprueba: al sacar dos
 reglas del DDL fallaron exactamente sus dos tests. Despliegue completo dos veces seguidas sin errores.
+
+## Fase 4: ETL en T-SQL
+
+```
+stg.* ──► dw.usp_run_etl ──► usp_load_dim_banco_cuenta     (MERGE, SCD1)
+           (orquestador)  ├► usp_load_dim_contraparte      (SCD2, snapshots en orden)
+                          ├► usp_load_fact_tipo_cambio
+                          ├► usp_load_fact_facturas
+                          ├► usp_load_fact_pagos / _cobranzas
+                          ├► usp_load_fact_movimientos_bancarios
+                          ├► usp_load_fact_saldo_bancario_mensual
+                          └► usp_load_fact_conciliacion    (alta de partidas; el matching es la Fase 6)
+                 cada paso ──► audit.etl_log (leídas / insertadas / actualizadas / descartadas + motivo / error)
+```
+
+| Paso | Leídas | Insertadas | Descartadas (motivo) | Duplicadas |
+|---|---:|---:|---|---:|
+| dim_contraparte | 245 | 142 (125 + 17 versiones SCD2) | — | — |
+| fact_facturas | 6.008 | 5.980 | 28 (monto con formato `1.234,56`, negativo, sin vencimiento, vence antes de emitirse) | — |
+| fact_pagos | 2.795 | 2.769 | 16 (fecha `2026-02-30`, monto negativo, moneda `US$`) | 10 |
+| fact_cobranzas | 2.577 | 2.561 | 10 (sin moneda, monto negativo) | 6 |
+| fact_movimientos_bancarios | 6.440 | 6.424 | 6 (sin importe, fecha inválida) | 10 (reenvíos del banco) |
+| fact_conciliacion | — | 10.679 partidas | — | — |
+
+Escala 1, carga completa: ~1,8 s. Lo descartado coincide **exactamente** con los errores inyectados que violan
+reglas del DW (lo verifica un test). El resto de los errores entra al DW: los ataja la Fase 5.
+
+**Decisiones:**
+- **MERGE vs. INSERT/UPDATE explícito: los dos, cada uno donde conviene.** `MERGE ... WITH (HOLDLOCK)` en
+  `dim_banco_cuenta` (upsert simple, `OUTPUT $action` da los conteos). UPDATE + INSERT explícitos en el SCD2 y en
+  los hechos: el SCD2 tiene tres operaciones (corregir tipo 1, cerrar versión, abrir versión) que en un MERGE quedan
+  enredadas, y separadas cada paso se cuenta y se depura solo; además MERGE tuvo bugs conocidos y sin `HOLDLOCK`
+  tiene problemas de concurrencia.
+- **Detección de cambios con `WHERE EXISTS (SELECT origen EXCEPT SELECT destino)`**: trata NULL = NULL (con `<>`
+  columna por columna un NULL esconde el cambio). Sin cambios no se escribe nada: re-ejecutar es un no-op.
+- **Transacción por paso + `TRY/CATCH` + `XACT_ABORT ON`**: un error revierte el paso entero, queda en
+  `audit.etl_log` con número y línea (el log se escribe fuera de la transacción, así no se revierte con ella) y el
+  orquestador frena (fail fast). Como todo es idempotente, volver a correr retoma sin duplicar.
+- **Incremental por fecha de negocio**: cada hecho procesa desde su marca de agua menos 7 días (líneas que el banco
+  informa tarde). Las fechas inválidas usan el mes del archivo para caer en alguna ventana y quedar contadas.
+  **Las fechas futuras no mueven la marca de agua**: un pago fechado 2027 por error la empujaba y la corrida
+  siguiente se salteaba fines de octubre (lo encontró la primera prueba del incremental).
+- **Lookup punto en el tiempo** de la contraparte SCD2 y **último tipo de cambio disponible** (`OUTER APPLY ... TOP 1`).
+- **Mínimo privilegio**: `rol_etl` solo tiene `EXECUTE` sobre `dw.usp_run_etl`; los demás procedimientos y tablas los usa
+  por *ownership chaining*. Hallazgo: con ese permiso, `OBJECT_NAME(@@PROCID)` devuelve NULL (el usuario no "ve" la
+  metadata del procedimiento), así que cada procedimiento declara su nombre como texto fijo.
+
+**Verificado** (23 tests nuevos, 146 en total, en cualquier orden de módulos): conteos que cuadran por paso, lo
+descartado = lo esperado según el manifiesto, re-ejecución sin cambios (incremental y completa), **carga por partes
+(hasta marzo + incremental) idéntica a la carga completa**, cada hecho apunta a la versión SCD2 vigente en su fecha,
+conversión a USD con el último TC, error a mitad de paso (rollback + log + fail fast) y permisos. Además: dos
+reconstrucciones completas desde cero (contenedor, datos, staging y DW) dan exactamente el mismo DW.
