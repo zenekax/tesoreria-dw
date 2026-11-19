@@ -1,0 +1,28 @@
+# Secretos
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# SQL Server / backups
+*.bak
+*.mdf
+*.ldf
+*.trn
+
+# Datos generados (se regeneran con seed fija)
+data/*
+!data/.gitkeep
+
+# Power BI (pesado; se publican capturas en docs/img/)
+*.pbix
+
+# Sistema / editores
+.DS_Store
+.vscode/
+.idea/
