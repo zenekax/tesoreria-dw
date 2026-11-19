@@ -46,7 +46,9 @@ HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18 openssl@3
   - **`openssl@3` es necesario**: el ODBC Driver 18.7 busca OpenSSL en `$(brew --prefix)/opt/openssl`,
     que Homebrew ahora apunta a OpenSSL 4.x, y el driver solo soporta hasta 3.0. Sin este arreglo
     falla con *"OpenSSL library could not be loaded"*. `scripts/setup_python.sh` lo resuelve
-    solo para el venv del proyecto (exporta `DYLD_LIBRARY_PATH` hacia `openssl@3` al activarlo).
+    solo para el venv del proyecto: `.venv/bin/python` (activado o no, también desde VS Code) se
+    relanza con `DYLD_LIBRARY_PATH` hacia `openssl@3` (`scripts/_tdw_openssl.py`), y `source .venv/bin/activate`
+    exporta la misma variable para que `sqlcmd` ande en la terminal.
 
 ## Cómo levantarlo
 
@@ -95,6 +97,7 @@ python/verificar_entorno.py
 python/generar_datos.py ERP + bancos sintéticos -> data/ (ver docs/datos-sinteticos.md)
 python/tests/          tests de reproducibilidad y exactitud del manifiesto de errores
 scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempotente)
+scripts/_tdw_openssl.py  relanzador que instala setup_python.sh en el venv (solo macOS)
 sql/00_setup/          base TesoreriaDW + schemas stg, dw, audit, sec
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
