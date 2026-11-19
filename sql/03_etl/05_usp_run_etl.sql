@@ -77,6 +77,7 @@ BEGIN
         EXEC dw.usp_load_fact_saldo_bancario_mensual @ej, @d, @fecha_hasta;
 
         EXEC dw.usp_load_fact_conciliacion @ej;
+        EXEC dw.usp_conciliar @ej;                 -- Fase 6: matching libro vs. banco
 
         -- Totales de control staging vs. DW: solo tienen sentido si se cargó todo lo disponible
         -- (con una ventana cerrada, lo que queda afuera daría diferencias esperables).

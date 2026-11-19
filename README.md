@@ -16,7 +16,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 3 | Modelo dimensional (`dw`) | ✅ |
 | 4 | ETL en T-SQL | ✅ |
 | 5 | Calidad de datos | ✅ |
-| 6 | Conciliación y análisis | ⏳ |
+| 6 | Conciliación y análisis | ✅ |
 | 7 | Performance | ⏳ |
 | 8 | Seguridad | ⏳ |
 | 9 | Capa de consumo (Power BI) | ⏳ |
@@ -118,6 +118,8 @@ sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
 sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y datos de referencia
 sql/03_etl/             audit.etl_log, marcas de agua, dw.usp_load_* y el orquestador dw.usp_run_etl
 sql/04_quality/         reglas de calidad, resultados, cuarentenas y totales de control
+sql/06_queries/         conciliación, aging, flujo de caja, top contrapartes, anomalías, PIVOT dinámico, CTE recursiva
+python/ejecutar_sql.py  corre un .sql del repo desde Python y devuelve sus result sets
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
@@ -298,3 +300,36 @@ extracto" a su cobranza) y se corrigieron con la regla de no marcar sin evidenci
 necesitan `COLLATE DATABASE_DEFAULT` porque toman la collation de `tempdb`, no la de la base.
 
 **Verificado**: 18 tests nuevos (9 × 2 datasets), 164 en total, en cualquier orden de módulos.
+
+## Fase 6: conciliación y análisis
+
+**Conciliación automática** (`dw.usp_conciliar`, corre dentro del ETL): para cada pago/cobranza busca su movimiento
+en el extracto, en la misma cuenta, con el mismo signo, entre el día del ERP y 7 días después, en tres pasadas por
+prioridad: **referencia completa**, **referencia parcial** (últimos 5 caracteres) y **monto + fecha**. Tolerancia de
+USD 50 en cuentas en dólares (comisiones SWIFT descontadas). El emparejamiento es **1 a 1 por "mejor mutuo"**
+iterativo (`ROW_NUMBER` desde los dos lados), así dos pagos iguales se reparten las dos líneas del banco por cercanía.
+
+| Conciliación (escala 1) | |
+|---|---|
+| Pares conciliados | 5.265 (4.745 por referencia, 520 por monto y fecha) |
+| Contra la conciliación "perfecta" del generador | **precisión 100%, recall 100%** |
+| Con diferencia (comisión descontada) | 138, exactamente las que el generador marcó como ruido |
+| Pendientes en banco / en libros | 22 / 84: lo que no tiene pareja en el DW (en tránsito, rechazado, sin registrar o en cuarentena) |
+
+**Consultas** (`sql/06_queries/`, cada una con el comentario de negocio de qué responde):
+
+| Archivo | Responde | Técnicas |
+|---|---|---|
+| `01_conciliacion.sql` | % conciliado por cuenta, calidad del matching, partidas pendientes más viejas | agregación condicional, `SUM() OVER`, `ROW_NUMBER` |
+| `02_aging_cobranzas.sql` | cartera a cobrar por tramo de vencimiento, por cliente y por moneda, **revaluada al TC de cierre** | CTE encadenadas, `CROSS APPLY` (último TC), **`PIVOT`**, acumulado |
+| `03_flujo_caja_diario.sql` | ingresos, egresos y **saldo acumulado diario por moneda** (todos los días, con o sin movimientos) | calendario `CROSS JOIN`, `SUM() OVER (ROWS UNBOUNDED PRECEDING)`, `LAG`, promedio móvil |
+| `04_top_contrapartes.sql` | top 10 de pagos y cobranzas, concentración por cuartil, Pareto, últimos 3 movimientos | `RANK`, **`NTILE(4)`**, `SUM() OVER`, `CROSS APPLY TOP 3` |
+| `05_anomalias.sql` | pagos atípicos (> 5× la mediana), posibles dobles pagos, facturas pagadas de más, clientes que se atrasan cada vez más | `PERCENTILE_CONT` como window function, `LAG`, días hábiles con el calendario |
+| `06_pivot_dinamico_seguro.sql` | reporte contraparte × mes de pagos, cobranzas o facturas | **SQL dinámico seguro**: lista blanca + `QUOTENAME` + parámetros de `sp_executesql` |
+| `07_evolucion_cartera_recursiva.sql` | evolución mensual de la cartera, % vencida > 30 días y **DSO** | **CTE recursiva** (serie de cierres de mes, `MAXRECURSION`), `CROSS APPLY`, `LAG` |
+
+Verificado (20 tests): conciliación 100%/100% y pendientes explicados uno por uno; el aging cuadra con un cálculo
+independiente en Python; el **saldo de cierre del flujo de caja difiere del saldo del banco exactamente en la plata de
+las líneas en cuarentena**; los 5 pagos atípicos y los 3 dobles pagos plantados se detectan sin falsos positivos; el
+PIVOT dinámico suma lo mismo que el hecho y **rechaza intentos de inyección** (`'PAGOS; DROP TABLE ...'`,
+`N'ARS'' OR 1=1 --'`); la serie recursiva coincide con el aging al cierre.
