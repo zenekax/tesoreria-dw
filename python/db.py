@@ -12,6 +12,13 @@ from pathlib import Path
 import pyodbc
 from dotenv import load_dotenv
 
+# Pooling de ODBC apagado (tiene que ser antes de la primera conexión). Verificado el
+# 19/11/2026 con unixODBC + ODBC Driver 18: una conexión sin autocommit, al cerrarse, vuelve
+# al pool con su transacción abierta y la conexión SIGUIENTE la hereda (@@TRANCOUNT = 1 aun
+# con autocommit=True). Para procesos batch el pool no aporta nada y esto evita escribir
+# dentro de una transacción ajena.
+pyodbc.pooling = False
+
 RAIZ = Path(__file__).resolve().parent.parent
 load_dotenv(RAIZ / ".env")
 
