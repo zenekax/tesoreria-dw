@@ -1,7 +1,7 @@
 /* =============================================================================
    01_crear_base_y_schemas.sql
-   Crea la base TesoreriaDW y los schemas del proyecto. Idempotente: se puede
-   correr N veces y siempre deja el mismo resultado.
+   Crea la base y los schemas del proyecto. Idempotente: se puede correr N veces
+   y siempre deja el mismo resultado.
 
    Analogía de tesorería: los schemas son "carpetas" del archivo de tesorería.
      stg   = extractos y planillas tal cual llegan del banco/ERP (crudo)
@@ -11,29 +11,31 @@
    Separar por schema permite dar permisos por "carpeta" (GRANT ON SCHEMA::dw)
    en vez de tabla por tabla.
 
-   Ejecutar:  docker exec tesoreria-sql /opt/mssql-tools18/bin/sqlcmd -C -S localhost \
-                -U sa -P "$MSSQL_SA_PASSWORD" -b -i /sql/00_setup/01_crear_base_y_schemas.sql
+   $(DB_NAME) es una variable de SQLCMD: la reemplaza scripts/run_sql.sh
+   (por defecto TesoreriaDW; los tests usan TesoreriaDW_test). Para correrlo a mano
+   en Azure Data Studio/SSMS, activar "SQLCMD mode" y poner arriba:
+       :setvar DB_NAME TesoreriaDW
    ============================================================================= */
 SET NOCOUNT ON;
 
-IF DB_ID(N'TesoreriaDW') IS NULL
+IF DB_ID(N'$(DB_NAME)') IS NULL
 BEGIN
     -- Collation explícita (CI = no distingue mayúsculas, AS = sí distingue
     -- acentos). Fijarla evita que el comportamiento de los JOIN/WHERE sobre
     -- texto dependa de cómo se instaló el servidor.
-    CREATE DATABASE TesoreriaDW COLLATE Latin1_General_100_CI_AS;
-    PRINT 'Base TesoreriaDW creada.';
+    CREATE DATABASE [$(DB_NAME)] COLLATE Latin1_General_100_CI_AS;
+    PRINT 'Base $(DB_NAME) creada.';
 END
 ELSE
-    PRINT 'Base TesoreriaDW ya existía.';
+    PRINT 'Base $(DB_NAME) ya existía.';
 GO
 
 -- SIMPLE: no necesitamos backups de log en un entorno de portfolio; evita que
 -- el .ldf crezca sin límite durante cargas masivas.
-ALTER DATABASE TesoreriaDW SET RECOVERY SIMPLE;
+ALTER DATABASE [$(DB_NAME)] SET RECOVERY SIMPLE;
 GO
 
-USE TesoreriaDW;
+USE [$(DB_NAME)];
 GO
 
 -- CREATE SCHEMA tiene que ser la única sentencia del batch, por eso va dentro
