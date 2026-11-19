@@ -39,7 +39,7 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_tipo_cambio';
-    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @descartadas INT, @duplicadas INT,
+    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @elim INT, @descartadas INT, @duplicadas INT,
             @motivos NVARCHAR(4000), @max DATE;
     SELECT @ejecucion_id = ISNULL(@ejecucion_id, NEWID()), @fecha_desde = ISNULL(@fecha_desde, '19000101'),
            @fecha_hasta = ISNULL(@fecha_hasta, '99991231');
@@ -52,6 +52,9 @@ BEGIN
                    TRY_CONVERT(DATE, LEFT(s._source_file, 7) + '-01', 23) AS mes_archivo,
                    ROW_NUMBER() OVER (PARTITION BY s.rate_date, s.currency ORDER BY s._row_id) AS nro
             FROM stg.fx_rates s
+            -- Fase 5: lo que la calidad de datos puso en cuarentena no entra al DW.
+            WHERE NOT EXISTS (SELECT 1 FROM audit.cuarentena_fx_rates q
+                              WHERE q.stg_row_id = s._row_id AND q.estado = 'EN_CUARENTENA')
         )
         SELECT t.*, f.fecha_key, m.moneda_key,
                CASE WHEN t.fecha IS NULL THEN 'FECHA_INVALIDA'
@@ -92,9 +95,24 @@ BEGIN
         ORDER BY c.fecha_key, c.moneda_key;
         SET @ins = @@ROWCOUNT;
 
+        -- Retiro (Fase 5): cotizaciones ya cargadas cuyo origen ahora está en cuarentena (ej. un TC 10x),
+        -- sin otra fila válida para ese día y moneda. Los hechos que lo usaban se recalculan en la carga.
+        DELETE f FROM dw.fact_tipo_cambio f
+        JOIN dw.dim_fecha d ON d.fecha_key = f.fecha_key
+        JOIN dw.dim_moneda m ON m.moneda_key = f.moneda_key
+        WHERE EXISTS (SELECT 1 FROM audit.cuarentena_fx_rates q
+                      WHERE q.estado = 'EN_CUARENTENA' AND q.currency = m.codigo_iso
+                        AND TRY_CONVERT(DATE, q.rate_date, 23) = d.fecha)
+          AND NOT EXISTS (SELECT 1 FROM stg.fx_rates s
+                          WHERE s.currency = m.codigo_iso AND TRY_CONVERT(DATE, s.rate_date, 23) = d.fecha
+                            AND NOT EXISTS (SELECT 1 FROM audit.cuarentena_fx_rates q2
+                                            WHERE q2.stg_row_id = s._row_id AND q2.estado = 'EN_CUARENTENA'));
+        SET @elim = @@ROWCOUNT;
+
         EXEC audit.usp_etl_avanzar_marca N'fact_tipo_cambio', @max;
         COMMIT;
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos;
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos,
+             @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
@@ -121,7 +139,7 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_facturas';
-    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @descartadas INT, @duplicadas INT,
+    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @elim INT, @descartadas INT, @duplicadas INT,
             @motivos NVARCHAR(4000), @max DATE;
     SELECT @ejecucion_id = ISNULL(@ejecucion_id, NEWID()), @fecha_desde = ISNULL(@fecha_desde, '19000101'),
            @fecha_hasta = ISNULL(@fecha_hasta, '99991231');
@@ -137,6 +155,9 @@ BEGIN
                    TRY_CONVERT(DATE, LEFT(s._source_file, 7) + '-01', 23) AS mes_archivo,
                    ROW_NUMBER() OVER (PARTITION BY s.invoice_id ORDER BY s._row_id) AS nro
             FROM stg.invoices s
+            -- Fase 5: lo que la calidad de datos puso en cuarentena no entra al DW.
+            WHERE NOT EXISTS (SELECT 1 FROM audit.cuarentena_invoices q
+                              WHERE q.stg_row_id = s._row_id AND q.estado = 'EN_CUARENTENA')
         )
         SELECT t.*, m.moneda_key, fe.fecha_key AS fecha_emision_key, fv.fecha_key AS fecha_vencimiento_key,
                ISNULL(cp.contraparte_key, -1) AS contraparte_key, tc.tipo_cambio_por_usd AS tipo_cambio_usd,
@@ -201,9 +222,20 @@ BEGIN
         ORDER BY c.fecha_emision, c.factura_id;
         SET @ins = @@ROWCOUNT;
 
+        -- Retiro (Fase 5): filas que ya estaban en el DW y cuyo origen ahora está en cuarentena,
+        -- sin otra fila válida en staging con la misma clave. No se pierden: quedan en la cuarentena.
+        DELETE f FROM dw.fact_facturas f
+        WHERE EXISTS (SELECT 1 FROM audit.cuarentena_invoices q WHERE q.invoice_id = f.factura_id AND q.estado = 'EN_CUARENTENA')
+          AND NOT EXISTS (SELECT 1 FROM stg.invoices s
+                          WHERE s.invoice_id = f.factura_id
+                            AND NOT EXISTS (SELECT 1 FROM audit.cuarentena_invoices q2
+                                            WHERE q2.stg_row_id = s._row_id AND q2.estado = 'EN_CUARENTENA'));
+        SET @elim = @@ROWCOUNT;
+
         EXEC audit.usp_etl_avanzar_marca N'fact_facturas', @max;
         COMMIT;
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos;
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos,
+             @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
@@ -230,7 +262,7 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_pagos';
-    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @descartadas INT, @duplicadas INT,
+    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @elim INT, @descartadas INT, @duplicadas INT,
             @motivos NVARCHAR(4000), @max DATE;
     SELECT @ejecucion_id = ISNULL(@ejecucion_id, NEWID()), @fecha_desde = ISNULL(@fecha_desde, '19000101'),
            @fecha_hasta = ISNULL(@fecha_hasta, '99991231');
@@ -245,6 +277,9 @@ BEGIN
                    TRY_CONVERT(DATE, LEFT(s._source_file, 7) + '-01', 23) AS mes_archivo,
                    ROW_NUMBER() OVER (PARTITION BY s.payment_id ORDER BY s._row_id) AS nro
             FROM stg.payments s
+            -- Fase 5: lo que la calidad de datos puso en cuarentena no entra al DW.
+            WHERE NOT EXISTS (SELECT 1 FROM audit.cuarentena_payments q
+                              WHERE q.stg_row_id = s._row_id AND q.estado = 'EN_CUARENTENA')
         )
         SELECT t.*, m.moneda_key, fp.fecha_key AS fecha_pago_key,
                ISNULL(cp.contraparte_key, -1) AS contraparte_key, ISNULL(bc.banco_cuenta_key, -1) AS banco_cuenta_key,
@@ -312,9 +347,20 @@ BEGIN
         ORDER BY c.fecha_pago, c.pago_id;
         SET @ins = @@ROWCOUNT;
 
+        -- Retiro (Fase 5): filas que ya estaban en el DW y cuyo origen ahora está en cuarentena,
+        -- sin otra fila válida en staging con la misma clave. No se pierden: quedan en la cuarentena.
+        DELETE f FROM dw.fact_pagos f
+        WHERE EXISTS (SELECT 1 FROM audit.cuarentena_payments q WHERE q.payment_id = f.pago_id AND q.estado = 'EN_CUARENTENA')
+          AND NOT EXISTS (SELECT 1 FROM stg.payments s
+                          WHERE s.payment_id = f.pago_id
+                            AND NOT EXISTS (SELECT 1 FROM audit.cuarentena_payments q2
+                                            WHERE q2.stg_row_id = s._row_id AND q2.estado = 'EN_CUARENTENA'));
+        SET @elim = @@ROWCOUNT;
+
         EXEC audit.usp_etl_avanzar_marca N'fact_pagos', @max;
         COMMIT;
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos;
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos,
+             @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
@@ -340,7 +386,7 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_cobranzas';
-    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @descartadas INT, @duplicadas INT,
+    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @elim INT, @descartadas INT, @duplicadas INT,
             @motivos NVARCHAR(4000), @max DATE;
     SELECT @ejecucion_id = ISNULL(@ejecucion_id, NEWID()), @fecha_desde = ISNULL(@fecha_desde, '19000101'),
            @fecha_hasta = ISNULL(@fecha_hasta, '99991231');
@@ -355,6 +401,9 @@ BEGIN
                    TRY_CONVERT(DATE, LEFT(s._source_file, 7) + '-01', 23) AS mes_archivo,
                    ROW_NUMBER() OVER (PARTITION BY s.collection_id ORDER BY s._row_id) AS nro
             FROM stg.collections s
+            -- Fase 5: lo que la calidad de datos puso en cuarentena no entra al DW.
+            WHERE NOT EXISTS (SELECT 1 FROM audit.cuarentena_collections q
+                              WHERE q.stg_row_id = s._row_id AND q.estado = 'EN_CUARENTENA')
         )
         SELECT t.*, m.moneda_key, fc.fecha_key AS fecha_cobranza_key,
                ISNULL(cp.contraparte_key, -1) AS contraparte_key, ISNULL(bc.banco_cuenta_key, -1) AS banco_cuenta_key,
@@ -422,9 +471,20 @@ BEGIN
         ORDER BY c.fecha_cobranza, c.cobranza_id;
         SET @ins = @@ROWCOUNT;
 
+        -- Retiro (Fase 5): filas que ya estaban en el DW y cuyo origen ahora está en cuarentena,
+        -- sin otra fila válida en staging con la misma clave. No se pierden: quedan en la cuarentena.
+        DELETE f FROM dw.fact_cobranzas f
+        WHERE EXISTS (SELECT 1 FROM audit.cuarentena_collections q WHERE q.collection_id = f.cobranza_id AND q.estado = 'EN_CUARENTENA')
+          AND NOT EXISTS (SELECT 1 FROM stg.collections s
+                          WHERE s.collection_id = f.cobranza_id
+                            AND NOT EXISTS (SELECT 1 FROM audit.cuarentena_collections q2
+                                            WHERE q2.stg_row_id = s._row_id AND q2.estado = 'EN_CUARENTENA'));
+        SET @elim = @@ROWCOUNT;
+
         EXEC audit.usp_etl_avanzar_marca N'fact_cobranzas', @max;
         COMMIT;
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos;
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos,
+             @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;
@@ -452,7 +512,7 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_movimientos_bancarios';
-    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @descartadas INT, @duplicadas INT,
+    DECLARE @log_id INT, @leidas INT, @ins INT, @upd INT, @elim INT, @descartadas INT, @duplicadas INT,
             @motivos NVARCHAR(4000), @max DATE;
     SELECT @ejecucion_id = ISNULL(@ejecucion_id, NEWID()), @fecha_desde = ISNULL(@fecha_desde, '19000101'),
            @fecha_hasta = ISNULL(@fecha_hasta, '99991231');
@@ -468,6 +528,9 @@ BEGIN
                    TRY_CONVERT(DATE, LEFT(s._source_file, 7) + '-01', 23) AS mes_archivo,
                    ROW_NUMBER() OVER (PARTITION BY s.statement_line_id ORDER BY s._row_id) AS nro
             FROM stg.bank_statements s
+            -- Fase 5: lo que la calidad de datos puso en cuarentena no entra al DW.
+            WHERE NOT EXISTS (SELECT 1 FROM audit.cuarentena_bank_statements q
+                              WHERE q.stg_row_id = s._row_id AND q.estado = 'EN_CUARENTENA')
         )
         SELECT t.*, m.moneda_key, fi.fecha_key AS fecha_imputacion_key, fv.fecha_key AS fecha_valor_key,
                ISNULL(bc.banco_cuenta_key, -1) AS banco_cuenta_key,
@@ -529,9 +592,20 @@ BEGIN
         ORDER BY c.fecha_imputacion, c.linea_extracto_id;
         SET @ins = @@ROWCOUNT;
 
+        -- Retiro (Fase 5): filas que ya estaban en el DW y cuyo origen ahora está en cuarentena,
+        -- sin otra fila válida en staging con la misma clave. No se pierden: quedan en la cuarentena.
+        DELETE f FROM dw.fact_movimientos_bancarios f
+        WHERE EXISTS (SELECT 1 FROM audit.cuarentena_bank_statements q WHERE q.statement_line_id = f.linea_extracto_id AND q.estado = 'EN_CUARENTENA')
+          AND NOT EXISTS (SELECT 1 FROM stg.bank_statements s
+                          WHERE s.statement_line_id = f.linea_extracto_id
+                            AND NOT EXISTS (SELECT 1 FROM audit.cuarentena_bank_statements q2
+                                            WHERE q2.stg_row_id = s._row_id AND q2.estado = 'EN_CUARENTENA'));
+        SET @elim = @@ROWCOUNT;
+
         EXEC audit.usp_etl_avanzar_marca N'fact_movimientos_bancarios', @max;
         COMMIT;
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos;
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, @descartadas, @duplicadas, @motivos,
+             @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;

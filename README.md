@@ -15,7 +15,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 2 | Staging (`stg`) | ✅ |
 | 3 | Modelo dimensional (`dw`) | ✅ |
 | 4 | ETL en T-SQL | ✅ |
-| 5 | Calidad de datos | ⏳ |
+| 5 | Calidad de datos | ✅ |
 | 6 | Conciliación y análisis | ⏳ |
 | 7 | Performance | ⏳ |
 | 8 | Seguridad | ⏳ |
@@ -80,7 +80,7 @@ python python/generar_datos.py
 python python/cargar_staging.py
 ```
 
-Transformar y cargar el DW (stored procedures; incremental por defecto, `--completa` para reprocesar todo):
+Validar la calidad, transformar y cargar el DW (stored procedures; incremental por defecto, `--completa` para reprocesar todo):
 
 ```bash
 python python/ejecutar_etl.py
@@ -117,9 +117,11 @@ sql/00_setup/          base + schemas stg, dw, audit, sec + login tdw_etl / rol_
 sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
 sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y datos de referencia
 sql/03_etl/             audit.etl_log, marcas de agua, dw.usp_load_* y el orquestador dw.usp_run_etl
+sql/04_quality/         reglas de calidad, resultados, cuarentenas y totales de control
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
+docs/calidad-de-datos.md  reglas, cuarentena, resultados, recall/precisión y decisiones
 ```
 
 ## Decisiones de la Fase 0
@@ -269,3 +271,30 @@ descartado = lo esperado según el manifiesto, re-ejecución sin cambios (increm
 (hasta marzo + incremental) idéntica a la carga completa**, cada hecho apunta a la versión SCD2 vigente en su fecha,
 conversión a USD con el último TC, error a mitad de paso (rollback + log + fail fast) y permisos. Además: dos
 reconstrucciones completas desde cero (contenedor, datos, staging y DW) dan exactamente el mismo DW.
+
+## Fase 5: calidad de datos
+
+Detalle en [docs/calidad-de-datos.md](docs/calidad-de-datos.md).
+
+- **51 reglas** en `audit.dq_reglas`: 43 sobre staging antes de cargar (completitud, unicidad, formato, rango,
+  integridad referencial lógica, consistencia entre fuentes) y 8 totales de control staging vs. DW después de cargar.
+- Resultados por regla y ejecución en **`audit.dq_resultados`** (regla, tabla, filas evaluadas, filas con error,
+  %, severidad, fecha) y detalle por fila en `audit.dq_errores` (archivo, línea, clave, valor observado).
+- **ERROR → cuarentena** (`audit.cuarentena_*`, copia fiel de la fila, nada se borra; al corregir y recargar queda
+  `LIBERADA`). **ADVERTENCIA → entra y se informa** (maestro de contrapartes, partidas sin contrapartida).
+- El ETL excluye lo que está en cuarentena y **retira del DW** lo que ya había entrado; descartes sin explicar: **0**.
+
+| Resultado (escala 1) | |
+|---|---|
+| Errores inyectados detectados (recall) | **174 / 174 = 100%** |
+| Precisión a nivel fila | 97,8% (los 4 sobrantes son las parejas de CUIT duplicado, explicados) |
+| En cuarentena | 141 filas (36 facturas, 59 pagos, 26 cobranzas, 16 líneas de extracto, 4 cotizaciones) |
+| Totales de control | filas y montos cuadran; **6 cuentas-mes** donde el saldo del banco no se explica (= las líneas en cuarentena) |
+| Tiempo de validación | ~1,7 s sobre 19.362 filas |
+
+Hallazgos del camino: los primeros 5 falsos positivos venían de **culpar a un comprobante por el error de otro**
+(un pago con fecha futura dejaba "sin match" a su línea del banco; una línea con importe en blanco dejaba "sin
+extracto" a su cobranza) y se corrigieron con la regla de no marcar sin evidencia. Y las `#tablas` temporales
+necesitan `COLLATE DATABASE_DEFAULT` porque toman la collation de `tempdb`, no la de la base.
+
+**Verificado**: 18 tests nuevos (9 × 2 datasets), 164 en total, en cualquier orden de módulos.

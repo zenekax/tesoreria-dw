@@ -38,6 +38,11 @@ CREATE TABLE audit.etl_log (
     usuario             SYSNAME           NOT NULL CONSTRAINT df_etl_log_usuario DEFAULT ORIGINAL_LOGIN()
 );
 GO
+-- Migración idempotente (Fase 5): filas retiradas del DW porque su origen pasó a cuarentena.
+-- Patrón para cambiar una tabla que ya existe sin borrarla: agregar la columna solo si falta.
+IF COL_LENGTH(N'audit.etl_log', N'filas_eliminadas') IS NULL
+    ALTER TABLE audit.etl_log ADD filas_eliminadas INT NULL;
+GO
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_etl_log_ejecucion')
     CREATE INDEX ix_etl_log_ejecucion ON audit.etl_log (ejecucion_id, etl_log_id);
 GO
@@ -79,7 +84,8 @@ CREATE OR ALTER PROCEDURE audit.usp_etl_log_fin
     @mensaje        NVARCHAR(4000) = NULL,
     @error_numero   INT = NULL,
     @error_linea    INT = NULL,
-    @error_proc     NVARCHAR(128) = NULL
+    @error_proc     NVARCHAR(128) = NULL,
+    @eliminadas     INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -87,7 +93,7 @@ BEGIN
     SET estado = @estado, filas_leidas = @leidas, filas_insertadas = @insertadas,
         filas_actualizadas = @actualizadas, filas_descartadas = @descartadas, filas_duplicadas = @duplicadas,
         mensaje = @mensaje, error_numero = @error_numero, error_linea = @error_linea,
-        error_procedimiento = @error_proc, fin_utc = SYSUTCDATETIME()
+        error_procedimiento = @error_proc, filas_eliminadas = @eliminadas, fin_utc = SYSUTCDATETIME()
     WHERE etl_log_id = @log_id;
 END;
 GO
