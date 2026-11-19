@@ -10,7 +10,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 
 | Fase | Contenido | Estado |
 |---|---|---|
-| 0 | Entorno: Docker, Python, Git | 🟡 falta probar `pyodbc` (driver ODBC en el Mac) |
+| 0 | Entorno: Docker, Python, Git | ✅ |
 | 1 | Datos sintéticos con errores inyectados | ⏳ |
 | 2 | Staging (`stg`) | ⏳ |
 | 3 | Modelo dimensional (`dw`) | ⏳ |
@@ -33,11 +33,20 @@ brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-rel
 ```
 
 ```bash
-HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18
+brew trust --formula microsoft/mssql-release/msodbcsql18 microsoft/mssql-release/mssql-tools18
 ```
 
-  (`msodbcsql18` trae `unixodbc` como dependencia; `mssql-tools18` agrega `sqlcmd` al Mac.
-  La variable `HOMEBREW_ACCEPT_EULA=Y` implica aceptar la licencia de Microsoft.)
+```bash
+HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18 mssql-tools18 openssl@3
+```
+
+  - `brew trust`: las versiones nuevas de Homebrew no cargan fórmulas de taps de terceros
+    sin confianza explícita. Se confía solo en las dos fórmulas necesarias, no en todo el tap.
+  - `HOMEBREW_ACCEPT_EULA=Y` implica aceptar la licencia de Microsoft.
+  - **`openssl@3` es necesario**: el ODBC Driver 18.7 busca OpenSSL en `$(brew --prefix)/opt/openssl`,
+    que Homebrew ahora apunta a OpenSSL 4.x, y el driver solo soporta hasta 3.0. Sin este arreglo
+    falla con *"OpenSSL library could not be loaded"*. `scripts/setup_python.sh` lo resuelve
+    solo para el venv del proyecto (exporta `DYLD_LIBRARY_PATH` hacia `openssl@3` al activarlo).
 
 ## Cómo levantarlo
 
@@ -50,7 +59,7 @@ docker compose up -d --wait
 ```
 
 ```bash
-uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
+./scripts/setup_python.sh && source .venv/bin/activate
 ```
 
 Crear la base y los schemas (idempotente, se puede correr varias veces):
@@ -62,7 +71,7 @@ docker exec tesoreria-sql sh -c '/opt/mssql-tools18/bin/sqlcmd -C -S localhost -
 Verificar que Python llega a la base:
 
 ```bash
-.venv/bin/python python/verificar_entorno.py
+python python/verificar_entorno.py
 ```
 
 ## Estructura
@@ -73,6 +82,7 @@ docker-compose.yml     SQL Server 2022 CU28 (tag fijo), volumen persistente, ./s
 requirements.txt       dependencias Python con versión fija
 python/db.py           conexión compartida (lee credenciales de .env)
 python/verificar_entorno.py
+scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempotente)
 sql/00_setup/          base TesoreriaDW + schemas stg, dw, audit, sec
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 ```
@@ -86,4 +96,6 @@ docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
   contenedor, sin depender de herramientas instaladas en el Mac.
 - **Schemas por capa** (`stg`, `dw`, `audit`, `sec`): permiten dar permisos por schema en la Fase 8.
 - **Recovery model SIMPLE**: no hace falta backup de log en un entorno de portfolio.
+- **Workaround de OpenSSL acotado al venv** en vez de cambiar el OpenSSL del sistema: no rompe
+  otros programas que ya usan OpenSSL 4.
 - Por ahora los scripts se conectan como `sa`; en la Fase 8 se crean usuarios con mínimo privilegio.

@@ -33,6 +33,8 @@ def main() -> int:
             ).fetchone()
     except Exception as e:
         print(f"[ERROR] No se pudo conectar: {e}")
+        if "OpenSSL" in str(e):
+            print("        En Mac: corré scripts/setup_python.sh y después `source .venv/bin/activate`.")
         return 1
 
     print(f"[OK] SQL Server {version} | {edicion}")
