@@ -18,7 +18,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 5 | Calidad de datos | ✅ |
 | 6 | Conciliación y análisis | ✅ |
 | 7 | Performance | ✅ (falta narrativa final en Fase 10) |
-| 8 | Seguridad | ⏳ |
+| 8 | Seguridad | ✅ |
 | 9 | Capa de consumo (Power BI) | ⏳ |
 | 10 | Cierre | ⏳ |
 
@@ -118,12 +118,14 @@ sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
 sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y datos de referencia
 sql/03_etl/             audit.etl_log, marcas de agua, dw.usp_load_* y el orquestador dw.usp_run_etl
 sql/04_quality/         reglas de calidad, resultados, cuarentenas y totales de control
+sql/05_security/        roles, GRANT/DENY, Row-Level Security, Dynamic Data Masking y prueba con EXECUTE AS
 sql/06_queries/         conciliación, aging, flujo de caja, top contrapartes, anomalías, PIVOT dinámico, CTE recursiva
 python/ejecutar_sql.py  corre un .sql del repo desde Python y devuelve sus result sets
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
 docs/calidad-de-datos.md  reglas, cuarentena, resultados, recall/precisión y decisiones
+docs/seguridad.md      modelo de amenazas, roles, RLS y masking
 ```
 
 ## Decisiones de la Fase 0
@@ -350,3 +352,22 @@ Hallazgos: el índice solo no arregla una subconsulta correlacionada (Q2); una r
 **peor** (spool, 20 s de CPU) y se descartó midiendo. A escala 20 la validación de calidad tardaba 151 s y perdía
 detecciones (reglas de "existencia"): las reglas ERP vs. banco pasaron a usar la conciliación 1 a 1 → **5,7 s y recall
 174/174 sin falsos positivos**. La conciliación con orden fecha-antes-que-diferencia da 100% en 107.701 pares.
+
+## Fase 8: seguridad
+
+Detalle y modelo de amenazas en [docs/seguridad.md](docs/seguridad.md).
+
+| Usuario (`EXECUTE AS`) | Monedas que ve (RLS) | CBU | Email | Staging | Escribir |
+|---|---|---|---|---|---|
+| `analista_ar` (`rol_lectura_analistas`) | ARS, USD | `XXXX...7809` | `cXXX@XXXX.com` | denegado | denegado |
+| `analista_br` (`rol_lectura_analistas`) | BRL | enmascarado | enmascarado | denegado | denegado |
+| `auditor_demo` (`rol_auditoria`) | todas | real | real | lee | denegado |
+| `tdw_etl` (`rol_etl`) | todas | real | real | escribe | solo vía `usp_run_etl` |
+
+- **Roles con GRANT/DENY a nivel de schema** y DENY explícito sobre staging, auditoría y seguridad para analistas.
+- **RLS** con funciones inline `SCHEMABINDING` y una política de filtro sobre los 6 hechos con moneda y las cuentas.
+- **Dynamic Data Masking** de CBU/CLABE, email y CUIT; `UNMASK` para auditoría y el ETL (sin él, la carga copiaba
+  valores enmascarados a tablas temporales y los cruces fallaban). Las huellas SCD se niegan por columna (DENY 230).
+- Login `tdw_powerbi` de solo lectura para la Fase 9; claves en `.env`.
+
+Verificado: 31 tests de seguridad (216 en total) y la prueba `04_pruebas_permisos.sql` en cada despliegue.

@@ -102,7 +102,9 @@ IF OBJECT_ID(N'dw.dim_banco_cuenta', N'U') IS NULL
 CREATE TABLE dw.dim_banco_cuenta (
     banco_cuenta_key  INT IDENTITY(1,1) NOT NULL CONSTRAINT pk_dim_banco_cuenta PRIMARY KEY,
     cuenta_id         NVARCHAR(20)  NOT NULL CONSTRAINT uq_dim_banco_cuenta_cuenta UNIQUE,  -- clave natural
-    numero_cuenta     NVARCHAR(34)  NOT NULL CONSTRAINT uq_dim_banco_cuenta_numero UNIQUE,  -- CBU/CLABE/IBAN (34 = máx. IBAN)
+    -- CBU/CLABE/IBAN (34 = máx. IBAN). Enmascarado (Fase 8): sin permiso UNMASK se ve 'XXXX...7809'.
+    numero_cuenta     NVARCHAR(34)  MASKED WITH (FUNCTION = 'partial(0, "XXXX...", 4)') NOT NULL
+                      CONSTRAINT uq_dim_banco_cuenta_numero UNIQUE,
     moneda_iso        CHAR(3)       NOT NULL,
     tipo_cuenta       VARCHAR(10)   NOT NULL,      -- CC, CA, CHK
     alias             NVARCHAR(100) NOT NULL,
@@ -137,8 +139,9 @@ CREATE TABLE dw.dim_contraparte (
     tipo_contraparte    VARCHAR(20)   NOT NULL
         CONSTRAINT ck_dim_contraparte_tipo CHECK (tipo_contraparte IN ('PROVEEDOR', 'CLIENTE', 'CORRESPONSAL', 'N/D')),
     razon_social        NVARCHAR(300) NOT NULL,
-    tax_id              NVARCHAR(50)  NULL,            -- NULL permitido: el control de calidad lo informa (Fase 5)
-    email               NVARCHAR(320) NULL,
+    -- tax_id y email enmascarados (Fase 8, ver sql/05_security/03_dynamic_data_masking.sql).
+    tax_id              NVARCHAR(50)  MASKED WITH (FUNCTION = 'partial(0, "XX-XXXXXX", 3)') NULL,  -- NULL: lo informa la Fase 5
+    email               NVARCHAR(320) MASKED WITH (FUNCTION = 'email()') NULL,
     pais                CHAR(2)       NOT NULL,
     moneda_default      CHAR(3)       NOT NULL,
     fecha_alta          DATE          NULL,
