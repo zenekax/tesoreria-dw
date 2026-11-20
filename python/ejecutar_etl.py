@@ -24,13 +24,14 @@ from db import conectar_etl
 
 
 def ejecutar(database: str | None = None, completa: bool = False, desde: date | None = None,
-             hasta: date | None = None, dias_reproceso: int = 7) -> list[dict]:
+             hasta: date | None = None, dias_reproceso: int = 7, validar_calidad: bool = True) -> list[dict]:
     """Corre dw.usp_run_etl y devuelve el resumen por paso. Importable desde los tests."""
     # autocommit=True: el procedimiento maneja sus propias transacciones (una por paso).
     with conectar_etl(database, autocommit=True) as cn:
         cur = cn.cursor()
         cur.execute("EXEC dw.usp_run_etl @carga_completa = ?, @fecha_desde = ?, @fecha_hasta = ?, "
-                    "@dias_reproceso = ?", int(completa), desde, hasta, dias_reproceso)
+                    "@dias_reproceso = ?, @validar_calidad = ?", int(completa), desde, hasta, dias_reproceso,
+                    int(validar_calidad))
         # El resumen es el último result set que devuelve el procedimiento.
         filas = []
         while True:
@@ -48,18 +49,20 @@ def main() -> int:
     ap.add_argument("--desde", type=date.fromisoformat)
     ap.add_argument("--hasta", type=date.fromisoformat)
     ap.add_argument("--dias-reproceso", type=int, default=7)
+    ap.add_argument("--sin-calidad", action="store_true", help="no correr las reglas de calidad (solo para pruebas)")
     ap.add_argument("--base", help="base destino (default: MSSQL_DATABASE del .env)")
     a = ap.parse_args()
     try:
-        filas = ejecutar(a.base, a.completa, a.desde, a.hasta, a.dias_reproceso)
+        filas = ejecutar(a.base, a.completa, a.desde, a.hasta, a.dias_reproceso, not a.sin_calidad)
     except pyodbc.Error as e:
         print(f"ETL con ERROR (detalle en audit.etl_log): {e}", file=sys.stderr)
         return 1
-    print(f"{'paso':<40} {'estado':<6} {'leídas':>7} {'insert.':>7} {'actual.':>7} {'descart.':>8} {'dup.':>5} {'ms':>6}")
+    print(f"{'paso':<40} {'estado':<6} {'leídas':>7} {'insert.':>7} {'actual.':>7} {'retir.':>6} "
+          f"{'descart.':>8} {'dup.':>5} {'ms':>6}")
     for f in filas:
         n = lambda k: "" if f[k] is None else f"{f[k]:,}"  # noqa: E731
         print(f"{f['proceso']:<40} {f['estado']:<6} {n('filas_leidas'):>7} {n('filas_insertadas'):>7} "
-              f"{n('filas_actualizadas'):>7} {n('filas_descartadas'):>8} {n('filas_duplicadas'):>5} "
+              f"{n('filas_actualizadas'):>7} {n('filas_eliminadas'):>6} {n('filas_descartadas'):>8} {n('filas_duplicadas'):>5} "
               f"{n('duracion_ms'):>6}")
         if f["mensaje"]:
             print(f"    {f['mensaje']}")

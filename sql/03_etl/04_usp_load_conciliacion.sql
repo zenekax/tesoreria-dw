@@ -27,7 +27,8 @@ BEGIN
     -- Nombre fijo y no OBJECT_NAME(@@PROCID): con mínimo privilegio, el usuario del ETL no
     -- "ve" la metadata de este procedimiento y OBJECT_NAME devolvería NULL.
     DECLARE @proc SYSNAME = N'dw.usp_load_fact_conciliacion';
-    DECLARE @log_id INT, @pagos INT, @cobranzas INT, @banco INT, @upd_libro INT, @upd_banco INT, @leidas INT;
+    DECLARE @log_id INT, @pagos INT, @cobranzas INT, @banco INT, @upd_libro INT, @upd_banco INT, @leidas INT,
+            @elim INT, @revertidas INT;
     DECLARE @altas TABLE (origen VARCHAR(10));
     SET @ejecucion_id = ISNULL(@ejecucion_id, NEWID());
     EXEC audit.usp_etl_log_inicio @ejecucion_id, @proc, NULL, NULL, @log_id OUTPUT;
@@ -50,6 +51,26 @@ BEGIN
         FROM dw.fact_cobranzas c;
 
         BEGIN TRANSACTION;
+
+        -- 0a. Partida conciliada cuya línea del banco fue retirada del DW (Fase 5: quedó en cuarentena):
+        --     vuelve a "pendiente en banco" hasta que llegue una línea válida.
+        UPDATE k
+        SET linea_extracto_id = NULL, monto_banco = NULL, fecha_banco_key = -2, fecha_conciliacion_key = -2,
+            dias_habiles_desfase = NULL, metodo_match = NULL, estado = 'PENDIENTE_EN_BANCO',
+            fecha_actualizacion_dw = SYSUTCDATETIME()
+        FROM dw.fact_conciliacion k
+        WHERE k.origen <> 'BANCO' AND k.linea_extracto_id IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM dw.fact_movimientos_bancarios m WHERE m.linea_extracto_id = k.linea_extracto_id);
+        SET @revertidas = @@ROWCOUNT;
+
+        -- 0b. Partidas cuyo hecho de origen ya no está en el DW (retirado por calidad de datos). Si la
+        --     partida estaba conciliada, su línea del banco queda libre y el paso 4 le abre su propia partida.
+        DELETE k FROM dw.fact_conciliacion k
+        WHERE (k.origen = 'PAGO' AND NOT EXISTS (SELECT 1 FROM dw.fact_pagos p WHERE p.pago_id = k.pago_id))
+           OR (k.origen = 'COBRANZA' AND NOT EXISTS (SELECT 1 FROM dw.fact_cobranzas c WHERE c.cobranza_id = k.cobranza_id))
+           OR (k.origen = 'BANCO' AND NOT EXISTS (SELECT 1 FROM dw.fact_movimientos_bancarios m
+                                                  WHERE m.linea_extracto_id = k.linea_extracto_id));
+        SET @elim = @@ROWCOUNT;
 
         -- 1. Partidas pendientes de libros que cambiaron en el hecho de origen (snapshot acumulativo:
         --    la fila se actualiza). Las ya conciliadas no se tocan desde acá.
@@ -109,10 +130,12 @@ BEGIN
         SET @banco = @@ROWCOUNT;
 
         COMMIT;
-        DECLARE @ins INT = ISNULL(@pagos, 0) + ISNULL(@cobranzas, 0) + @banco, @upd INT = @upd_libro + @upd_banco;
+        DECLARE @ins INT = ISNULL(@pagos, 0) + ISNULL(@cobranzas, 0) + @banco,
+                @upd INT = @upd_libro + @upd_banco + @revertidas;
         DECLARE @msg_ok NVARCHAR(4000) = CONCAT(N'partidas nuevas: pagos=', ISNULL(@pagos, 0), N', cobranzas=',
-                ISNULL(@cobranzas, 0), N', banco=', @banco);
-        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, 0, 0, @msg_ok;
+                ISNULL(@cobranzas, 0), N', banco=', @banco, N'; retiradas=', @elim,
+                N', conciliadas que vuelven a pendiente=', @revertidas);
+        EXEC audit.usp_etl_log_fin @log_id, 'OK', @leidas, @ins, @upd, 0, 0, @msg_ok, @eliminadas = @elim;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK;

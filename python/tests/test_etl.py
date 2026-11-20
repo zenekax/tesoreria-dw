@@ -51,7 +51,9 @@ def sa():
 
 
 def correr(**kw) -> list[dict]:
-    return etl.ejecutar(BASE_TEST, **kw)
+    # Sin las reglas de calidad (Fase 5): acá se prueba el ETL solo, con sus propios descartes.
+    # La combinación ETL + calidad se prueba en test_calidad.py.
+    return etl.ejecutar(BASE_TEST, validar_calidad=False, **kw)
 
 
 def foto_dw() -> dict[str, list[tuple]]:

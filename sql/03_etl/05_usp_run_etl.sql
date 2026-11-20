@@ -33,7 +33,8 @@ CREATE OR ALTER PROCEDURE dw.usp_run_etl
     @carga_completa BIT  = 0,
     @fecha_desde    DATE = NULL,
     @fecha_hasta    DATE = NULL,
-    @dias_reproceso INT  = 7
+    @dias_reproceso INT  = 7,
+    @validar_calidad BIT = 1          -- Fase 5: validar staging antes y controlar totales después
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -48,6 +49,11 @@ BEGIN
             THROW 50002, N'@dias_reproceso no puede ser negativo.', 1;
         IF @@TRANCOUNT > 0
             THROW 50003, N'usp_run_etl maneja sus propias transacciones: llamarlo fuera de una transacción (autocommit).', 1;
+
+        -- Fase 5: primero la calidad de datos. Lo que viola una regla ERROR queda en cuarentena y
+        -- los usp_load_* lo excluyen (y retiran del DW si ya había entrado).
+        IF @validar_calidad = 1
+            EXEC audit.usp_dq_validar_staging @ej;
 
         EXEC dw.usp_load_dim_banco_cuenta @ej;
         EXEC dw.usp_load_dim_contraparte @ej;
@@ -72,11 +78,16 @@ BEGIN
 
         EXEC dw.usp_load_fact_conciliacion @ej;
 
+        -- Totales de control staging vs. DW: solo tienen sentido si se cargó todo lo disponible
+        -- (con una ventana cerrada, lo que queda afuera daría diferencias esperables).
+        IF @validar_calidad = 1 AND @fecha_hasta IS NULL
+            EXEC audit.usp_dq_controles_post_carga @ej;
+
         DECLARE @resumen NVARCHAR(4000);
-        SELECT @resumen = CONCAT(N'pasos=', COUNT(*), N', insertadas=', SUM(filas_insertadas),
-                                 N', actualizadas=', SUM(filas_actualizadas), N', descartadas=', SUM(filas_descartadas),
-                                 N', duplicadas=', SUM(filas_duplicadas))
-        FROM audit.etl_log WHERE ejecucion_id = @ej AND etl_log_id <> @log_id;
+        SELECT @resumen = CONCAT(N'pasos de carga=', COUNT(*), N', insertadas=', SUM(filas_insertadas),
+                                 N', actualizadas=', SUM(filas_actualizadas), N', retiradas=', ISNULL(SUM(filas_eliminadas), 0),
+                                 N', descartadas=', SUM(filas_descartadas), N', duplicadas=', SUM(filas_duplicadas))
+        FROM audit.etl_log WHERE ejecucion_id = @ej AND proceso LIKE N'dw.usp[_]load[_]%';
         EXEC audit.usp_etl_log_fin @log_id, 'OK', @mensaje = @resumen;
     END TRY
     BEGIN CATCH
@@ -90,7 +101,7 @@ BEGIN
 
     -- Resumen de la corrida (lo muestra quien la ejecuta: sqlcmd, Azure Data Studio o Python).
     SELECT etl_log_id, proceso, estado, fecha_desde, fecha_hasta, filas_leidas, filas_insertadas,
-           filas_actualizadas, filas_descartadas, filas_duplicadas, duracion_ms, mensaje
+           filas_actualizadas, filas_eliminadas, filas_descartadas, filas_duplicadas, duracion_ms, mensaje
     FROM audit.etl_log
     WHERE ejecucion_id = @ej
     ORDER BY etl_log_id;
