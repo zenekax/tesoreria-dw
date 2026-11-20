@@ -1,0 +1,27 @@
+services:
+  sqlserver:
+    # Tag fijo (no "2022-latest") para que el entorno sea reproducible:
+    # si alguien clona el repo en un año, levanta exactamente la misma versión.
+    image: mcr.microsoft.com/mssql/server:2022-CU28-ubuntu-22.04
+    platform: linux/amd64   # no hay imagen ARM de SQL Server: en Apple Silicon corre emulado (Rosetta)
+    container_name: tesoreria-sql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?Falta MSSQL_SA_PASSWORD en .env}
+      MSSQL_PID: Developer            # edición gratuita con todas las features (RLS, columnstore, etc.)
+      MSSQL_MEMORY_LIMIT_MB: "2048"   # evita que SQL Server se coma toda la RAM de Docker
+      TZ: America/Argentina/Buenos_Aires
+    ports:
+      - "${MSSQL_PORT:-1433}:1433"
+    volumes:
+      - sqldata:/var/opt/mssql        # datos persistentes entre reinicios del contenedor
+      - ./sql:/sql:ro                 # scripts del repo visibles adentro, solo lectura
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -Q \"SELECT 1\" -b -o /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+volumes:
+  sqldata:

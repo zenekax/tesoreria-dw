@@ -1,0 +1,6 @@
+# Versiones fijadas para reproducibilidad (probado con Python 3.12).
+pandas==3.1.1
+pyodbc==5.5.0        # requiere unixODBC + "ODBC Driver 18 for SQL Server" en el sistema (ver README)
+faker==40.54.0
+pytest==9.2.0
+python-dotenv==1.2.4
