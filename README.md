@@ -19,7 +19,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 6 | Conciliación y análisis | ✅ |
 | 7 | Performance | ✅ (falta narrativa final en Fase 10) |
 | 8 | Seguridad | ✅ |
-| 9 | Capa de consumo (Power BI) | ⏳ |
+| 9 | Capa de consumo (Power BI) | ✅ (capturas pendientes: requieren Power BI en Windows) |
 | 10 | Cierre | ⏳ |
 
 ## Requisitos
@@ -119,6 +119,7 @@ sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y 
 sql/03_etl/             audit.etl_log, marcas de agua, dw.usp_load_* y el orquestador dw.usp_run_etl
 sql/04_quality/         reglas de calidad, resultados, cuarentenas y totales de control
 sql/05_security/        roles, GRANT/DENY, Row-Level Security, Dynamic Data Masking y prueba con EXECUTE AS
+sql/08_reporting/       vistas rpt.* para Power BI (estrella + flujo de caja, aging, evolución de cartera)
 sql/06_queries/         conciliación, aging, flujo de caja, top contrapartes, anomalías, PIVOT dinámico, CTE recursiva
 python/ejecutar_sql.py  corre un .sql del repo desde Python y devuelve sus result sets
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
@@ -126,6 +127,7 @@ docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y
 docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
 docs/calidad-de-datos.md  reglas, cuarentena, resultados, recall/precisión y decisiones
 docs/seguridad.md      modelo de amenazas, roles, RLS y masking
+docs/powerbi.md        guía paso a paso del tablero (conexión, modelo, DAX, páginas)
 ```
 
 ## Decisiones de la Fase 0
@@ -371,3 +373,21 @@ Detalle y modelo de amenazas en [docs/seguridad.md](docs/seguridad.md).
 - Login `tdw_powerbi` de solo lectura para la Fase 9; claves en `.env`.
 
 Verificado: 31 tests de seguridad (216 en total) y la prueba `04_pruebas_permisos.sql` en cada despliegue.
+
+## Fase 9: capa de consumo (Power BI)
+
+12 vistas en el schema `rpt` (`sql/08_reporting/01_vistas_rpt.sql`):
+- **estrella** para Power BI: `dim_fecha`, `dim_moneda`, `dim_cuenta`, `dim_contraparte`, `fact_movimientos`, `fact_pagos`,
+  `fact_cobranzas`, `fact_facturas`, `fact_conciliacion`, con nombres de negocio y sin claves técnicas, hashes ni datos sensibles;
+- **calculadas**: `v_flujo_caja_diario` (saldo acumulado por moneda, todos los días), `v_aging_cobranzas` (al último
+  cierre, revaluado al TC de ese día) y `v_evolucion_cartera` (cartera, vencida > 30 días y DSO por mes).
+
+La seguridad viaja sola: **RLS y masking se aplican a través de las vistas**. El login `tdw_powerbi` ve todas las monedas
+con CBU enmascarado; un analista de Brasil ve solo BRL en el mismo tablero.
+
+Guía paso a paso del tablero (conexión desde Windows al SQL Server del Mac, modelo, medidas DAX y 3 páginas: flujo
+de caja, aging y conciliación) en [docs/powerbi.md](docs/powerbi.md). La guía de capturas está en [docs/img/README.md](docs/img/README.md).
+
+Verificado: 18 tests. Cada vista responde para el login de Power BI, no expone datos sensibles, respeta RLS y **da los
+mismos números que las consultas de análisis de la Fase 6**. **No verificado:** el `.pbix` en sí (Power BI Desktop
+requiere Windows); las capturas quedan para hacer con la guía.
