@@ -12,7 +12,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 |---|---|---|
 | 0 | Entorno: Docker, Python, Git | ✅ |
 | 1 | Datos sintéticos con errores inyectados | ✅ |
-| 2 | Staging (`stg`) | ⏳ |
+| 2 | Staging (`stg`) | ✅ |
 | 3 | Modelo dimensional (`dw`) | ⏳ |
 | 4 | ETL en T-SQL | ⏳ |
 | 5 | Calidad de datos | ⏳ |
@@ -64,17 +64,23 @@ docker compose up -d --wait
 ./scripts/setup_python.sh && source .venv/bin/activate
 ```
 
-Crear la base y los schemas (idempotente, se puede correr varias veces):
+Desplegar la base (base, schemas, usuario ETL y tablas de staging; idempotente):
 
 ```bash
-docker exec tesoreria-sql sh -c '/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -b -i /sql/00_setup/01_crear_base_y_schemas.sql'
+scripts/run_sql.sh
 ```
 
-Generar los datos sintéticos (12 meses, seed fija, 174 errores inyectados) y correr los tests:
+Generar los datos sintéticos (12 meses, seed fija, 174 errores inyectados) y cargarlos a staging:
 
 ```bash
 python python/generar_datos.py
 ```
+
+```bash
+python python/cargar_staging.py
+```
+
+Correr los tests (los de staging usan una base aparte, `TesoreriaDW_test`, que se crea y se borra):
 
 ```bash
 python -m pytest python/tests -q
@@ -95,10 +101,13 @@ requirements.txt       dependencias Python con versión fija
 python/db.py           conexión compartida (lee credenciales de .env)
 python/verificar_entorno.py
 python/generar_datos.py ERP + bancos sintéticos -> data/ (ver docs/datos-sinteticos.md)
-python/tests/          tests de reproducibilidad y exactitud del manifiesto de errores
+python/cargar_staging.py  CSV -> stg.* con pyodbc (fast_executemany), idempotente por archivo
+python/tests/          tests del generador y de la carga (integración contra TesoreriaDW_test)
+scripts/run_sql.sh     ejecuta los .sql en orden con el sqlcmd del contenedor (variables SQLCMD)
 scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempotente)
 scripts/_tdw_openssl.py  relanzador que instala setup_python.sh en el venv (solo macOS)
-sql/00_setup/          base TesoreriaDW + schemas stg, dw, audit, sec
+sql/00_setup/          base + schemas stg, dw, audit, sec + login tdw_etl / rol_etl
+sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
 ```
@@ -114,7 +123,8 @@ docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y
 - **Recovery model SIMPLE**: no hace falta backup de log en un entorno de portfolio.
 - **Workaround de OpenSSL acotado al venv** en vez de cambiar el OpenSSL del sistema: no rompe
   otros programas que ya usan OpenSSL 4.
-- Por ahora los scripts se conectan como `sa`; en la Fase 8 se crean usuarios con mínimo privilegio.
+- Desde la Fase 2 la carga usa el login `tdw_etl` (rol `rol_etl`, mínimo privilegio); `sa` queda solo
+  para el despliegue y los tests. En la Fase 8 se agregan los roles de analistas y auditoría.
 
 ## Fase 1: datos sintéticos
 
@@ -137,3 +147,34 @@ Decisiones principales:
 - **Realismo de conciliación**: desfase de fechas, referencias parciales, comisiones descontadas del monto y
   partidas en tránsito. La respuesta correcta está en `data/_verdad/conciliacion_esperada.csv`.
 - **Dos snapshots del maestro de contrapartes** (nov-25 y may-26) con cambios de riesgo, plazo y segmento para el SCD2.
+
+## Fase 2: staging
+
+```
+data/AAAA-MM/*.csv ──► python/cargar_staging.py ──► stg.<tabla>        (copia fiel, todo NVARCHAR)
+   (extractos crudos)    usuario tdw_etl          └► audit.carga_staging (1 fila por archivo y corrida)
+```
+
+- **9 tablas `stg.*`**, una por tipo de archivo (los dos snapshots de contrapartes van a la misma tabla).
+  Cada fila lleva su linaje: `_row_id`, `_carga_id`, `_source_file`, `_source_line`, `_loaded_at`.
+- **Todo NVARCHAR, sin claves de negocio**: staging es el extracto crudo. Si `amount` fuera `DECIMAL`,
+  la fila `1.234.567,89` o la fecha `2026-02-30` haría fallar la carga y el error nunca llegaría a los
+  controles de la Fase 5; si hubiera una clave única, los duplicados tampoco. La conversión se hace
+  después con `TRY_CONVERT`.
+- **Idempotente por archivo**: si el sha256 y las filas coinciden con la última carga, se omite; si el
+  archivo cambió (o alguien borró filas de staging), se borra y se recarga ese archivo en una transacción.
+  Por eso se puede cargar mes a mes (`--mes 2026-03`) o todo junto, N veces, sin duplicar.
+- **Controles antes de insertar**: el encabezado del CSV tiene que coincidir con la tabla y ningún valor
+  puede exceder el largo de su columna. Si falla, el archivo queda en `ERROR` en la bitácora (con columna
+  y línea) y la versión anterior en staging queda intacta.
+- **`fast_executemany`** con `setinputsizes` explícito: escala 1 (76 archivos, ~19.500 filas) carga en ~1 s.
+- **Mínimo privilegio**: `rol_etl` tiene `SELECT/INSERT/DELETE` en `stg` y `SELECT/INSERT` en `audit`
+  (más `UPDATE` solo en la bitácora). No puede crear ni borrar tablas, truncar, editar staging ni borrar
+  la bitácora: los tests lo verifican por código de error.
+- **Base de test aparte**: el nombre de la base es una variable SQLCMD (`$(DB_NAME)`), así los tests
+  despliegan `TesoreriaDW_test` con los mismos scripts y nunca tocan la base de trabajo.
+
+Verificado: 17 tests de integración (copia fiel fila por fila contra los CSV, cada uno de los 174 errores
+inyectados presente en staging por archivo y línea, re-ejecución sin duplicados, archivo corregido,
+filas borradas, encabezado inválido, valor demasiado largo, permisos), y reconstrucción completa desde
+cero (contenedor y volumen borrados): staging queda idéntico.

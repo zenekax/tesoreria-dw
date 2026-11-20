@@ -31,5 +31,13 @@ def cadena_conexion(database: str | None = None, usuario: str = "sa", clave: str
     )
 
 
-def conectar(database: str | None = None, **kwargs) -> pyodbc.Connection:
-    return pyodbc.connect(cadena_conexion(database, **kwargs), timeout=10)
+def conectar(database: str | None = None, autocommit: bool = False, **kwargs) -> pyodbc.Connection:
+    """Conexión como `sa`: solo para tareas de administración (setup, tests)."""
+    return pyodbc.connect(cadena_conexion(database, **kwargs), timeout=10, autocommit=autocommit)
+
+
+def conectar_etl(database: str | None = None, autocommit: bool = False) -> pyodbc.Connection:
+    """Conexión de aplicación con el usuario de mínimo privilegio (rol_etl)."""
+    return pyodbc.connect(
+        cadena_conexion(database, usuario=os.environ["MSSQL_ETL_USER"], clave=os.environ["MSSQL_ETL_PASSWORD"]),
+        timeout=10, autocommit=autocommit)
