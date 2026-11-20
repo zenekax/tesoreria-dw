@@ -15,8 +15,13 @@
    Tolerancia: @tolerancia_usd en cuentas en USD (comisiones SWIFT), 1 centavo en el resto.
 
    Emparejamiento 1 a 1 por "mejor mutuo" (iterativo): en cada vuelta se aceptan los pares
-   que son, a la vez, el mejor candidato del pago y el mejor candidato de la línea del banco
-   (orden: prioridad, menor diferencia, menor desfase). Se sacan, y se repite con lo que queda.
+   que son, a la vez, el mejor candidato del pago y el mejor candidato de la línea del banco.
+   Orden de preferencia: prioridad (referencia) -> importe EXACTO -> menor desfase de fecha ->
+   menor diferencia de importe. La fecha va antes que la diferencia porque, cuando el banco
+   descontó una comisión, la diferencia es la comisión (aleatoria) y no dice nada; la cercanía
+   de fecha sí. (Lo mostró la medición a escala 20: un solo par mal asignado de 107.700, de un
+   mismo proveedor con dos transferencias SWIFT sin referencia y montos parecidos.)
+   Se sacan los pares aceptados y se repite con lo que queda.
    Así un movimiento nunca concilia dos pagos, y dos pagos iguales (el posible doble pago)
    se reparten las dos líneas del banco por cercanía de fecha.
 
@@ -89,8 +94,10 @@ BEGIN
             SET @vuelta += 1;
             WITH ranking AS (
                 SELECT p.*,
-                       ROW_NUMBER() OVER (PARTITION BY p.k_libro ORDER BY p.prioridad, p.diferencia_abs, p.dias, p.k_banco) AS rn_libro,
-                       ROW_NUMBER() OVER (PARTITION BY p.k_banco ORDER BY p.prioridad, p.diferencia_abs, p.dias, p.k_libro) AS rn_banco
+                       ROW_NUMBER() OVER (PARTITION BY p.k_libro ORDER BY p.prioridad, IIF(p.diferencia_abs = 0, 0, 1), p.dias,
+                                          p.diferencia_abs, p.k_banco) AS rn_libro,
+                       ROW_NUMBER() OVER (PARTITION BY p.k_banco ORDER BY p.prioridad, IIF(p.diferencia_abs = 0, 0, 1), p.dias,
+                                          p.diferencia_abs, p.k_libro) AS rn_banco
                 FROM #pares p
                 WHERE NOT EXISTS (SELECT 1 FROM #match m WHERE m.k_libro = p.k_libro OR m.k_banco = p.k_banco)
             )

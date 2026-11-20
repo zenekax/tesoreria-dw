@@ -37,7 +37,7 @@ INSERT INTO @reglas VALUES
 ('PAG_CONTRAPARTE_INEXISTENTE', N'Pago a una contraparte que no está en el maestro',             'integridad_referencial', 'payments', 'ERROR', 'PRE_CARGA'),
 ('PAG_CUENTA_INEXISTENTE',    N'Pago desde una cuenta bancaria que no existe',                   'integridad_referencial', 'payments', 'ERROR', 'PRE_CARGA'),
 ('PAG_MONEDA_INCONSISTENTE',  N'Moneda del pago distinta a la de su factura o su cuenta',        'consistencia',           'payments', 'ERROR', 'PRE_CARGA'),
-('PAG_SIN_EXTRACTO',          N'Pago del ERP sin débito en el extracto bancario (fuera del período de tránsito)', 'consistencia', 'payments', 'ADVERTENCIA', 'PRE_CARGA'),
+('PAG_SIN_EXTRACTO',          N'Pago del ERP sin débito en el extracto bancario (fuera del período de tránsito)', 'consistencia', 'payments', 'ADVERTENCIA', 'POST_CARGA'),
 -- cobranzas
 ('COB_DUPLICADO',             N'La misma cobranza aparece más de una vez',                       'unicidad',               'collections', 'ERROR', 'PRE_CARGA'),
 ('COB_MONEDA_NULA',           N'Cobranza sin moneda',                                            'completitud',            'collections', 'ERROR', 'PRE_CARGA'),
@@ -47,14 +47,14 @@ INSERT INTO @reglas VALUES
 ('COB_FACTURA_INEXISTENTE',   N'Cobranza que referencia una factura inexistente',                'integridad_referencial', 'collections', 'ERROR', 'PRE_CARGA'),
 ('COB_CONTRAPARTE_INEXISTENTE', N'Cobranza de una contraparte que no está en el maestro',        'integridad_referencial', 'collections', 'ERROR', 'PRE_CARGA'),
 ('COB_MONEDA_INCONSISTENTE',  N'Moneda de la cobranza distinta a la de su factura o su cuenta',  'consistencia',           'collections', 'ERROR', 'PRE_CARGA'),
-('COB_SIN_EXTRACTO',          N'Cobranza del ERP sin crédito en el extracto bancario (fuera del período de tránsito)', 'consistencia', 'collections', 'ADVERTENCIA', 'PRE_CARGA'),
+('COB_SIN_EXTRACTO',          N'Cobranza del ERP sin crédito en el extracto bancario (fuera del período de tránsito)', 'consistencia', 'collections', 'ADVERTENCIA', 'POST_CARGA'),
 -- extracto bancario
 ('EXT_DUPLICADO',             N'Línea de extracto repetida (ej. el banco la reenvía el mes siguiente)', 'unicidad',       'bank_statements', 'ERROR', 'PRE_CARGA'),
 ('EXT_MONTO_NULO',            N'Línea de extracto sin importe o con importe no numérico',        'completitud',            'bank_statements', 'ERROR', 'PRE_CARGA'),
 ('EXT_FECHA_INVALIDA',        N'Fecha de imputación o valor inexistente o mal formada',          'formato',                'bank_statements', 'ERROR', 'PRE_CARGA'),
 ('EXT_CUENTA_DESCONOCIDA',    N'Línea de una cuenta bancaria que no está en el maestro',         'integridad_referencial', 'bank_statements', 'ERROR', 'PRE_CARGA'),
 ('EXT_MONEDA_INCONSISTENTE',  N'Moneda de la línea distinta a la de su cuenta',                  'consistencia',           'bank_statements', 'ERROR', 'PRE_CARGA'),
-('EXT_SIN_MATCH',             N'Transferencia del banco sin pago ni cobranza en el ERP',         'consistencia',           'bank_statements', 'ADVERTENCIA', 'PRE_CARGA'),
+('EXT_SIN_MATCH',             N'Transferencia del banco sin pago ni cobranza en el ERP',         'consistencia',           'bank_statements', 'ADVERTENCIA', 'POST_CARGA'),
 -- tipos de cambio
 ('TC_NULO',                   N'Cotización vacía o no numérica',                                 'completitud',            'fx_rates', 'ERROR', 'PRE_CARGA'),
 ('TC_FALTANTE',               N'Día hábil sin cotización publicada para una moneda',             'completitud',            'fx_rates', 'ADVERTENCIA', 'PRE_CARGA'),
@@ -63,6 +63,7 @@ INSERT INTO @reglas VALUES
 ('CP_TAX_ID_NULO',            N'Contraparte sin identificación fiscal',                          'completitud',            'counterparties', 'ADVERTENCIA', 'PRE_CARGA'),
 ('CP_EMAIL_INVALIDO',         N'Email de contraparte con formato inválido',                      'formato',                'counterparties', 'ADVERTENCIA', 'PRE_CARGA'),
 ('CP_TAX_ID_DUPLICADO',       N'Dos contrapartes con la misma identificación fiscal',            'unicidad',               'counterparties', 'ADVERTENCIA', 'PRE_CARGA'),
+-- (PAG_SIN_EXTRACTO, COB_SIN_EXTRACTO y EXT_SIN_MATCH son POST_CARGA: usan la conciliación 1 a 1)
 -- totales de control staging vs. DW (después de cargar)
 ('CTL_FILAS_FACTURAS',        N'Facturas válidas en staging = facturas en el DW',                'totales_control',        'fact_facturas', 'ADVERTENCIA', 'POST_CARGA'),
 ('CTL_FILAS_PAGOS',           N'Pagos válidos en staging = pagos en el DW',                      'totales_control',        'fact_pagos', 'ADVERTENCIA', 'POST_CARGA'),

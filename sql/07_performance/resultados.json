@@ -1,0 +1,150 @@
+{
+  "antes": {
+    "Q1": {
+      "titulo": "Flujo de caja diario por moneda",
+      "lecturas_logicas": 4087,
+      "por_tabla": {
+        "Worktable": 747,
+        "Workfile": 0,
+        "fact_movimientos_bancarios": 3312,
+        "dim_fecha": 2,
+        "fact_saldo_bancario_mensual": 24,
+        "dim_moneda": 2
+      },
+      "cpu_ms": 116,
+      "total_ms": 117,
+      "operadores": [
+        "Clustered Index Scan en dim_moneda (pk_dim_moneda)",
+        "Clustered Index Scan en fact_saldo_bancario_mensual (pk_fact_saldo_bancario_mensual)",
+        "Index Seek en dim_fecha (ux_dim_fecha_fecha)",
+        "Clustered Index Scan en fact_movimientos_bancarios (pk_fact_movimientos_bancarios)"
+      ]
+    },
+    "Q2": {
+      "titulo": "Evolución mensual de la cartera (CTE recursiva)",
+      "lecturas_logicas": 1302345,
+      "por_tabla": {
+        "Worktable": 1264679,
+        "fact_cobranzas": 1054,
+        "Workfile": 0,
+        "fact_facturas": 36144,
+        "dim_fecha": 468
+      },
+      "cpu_ms": 1653,
+      "total_ms": 1653,
+      "operadores": [
+        "Clustered Index Scan en dim_fecha (pk_dim_fecha)",
+        "Clustered Index Scan en fact_facturas (pk_fact_facturas)",
+        "Clustered Index Scan en fact_cobranzas (pk_fact_cobranzas)"
+      ]
+    },
+    "Q3": {
+      "titulo": "Partidas pendientes de conciliación",
+      "lecturas_logicas": 6553,
+      "por_tabla": {
+        "fact_conciliacion": 5268,
+        "dim_banco_cuenta": 510,
+        "dim_fecha": 224,
+        "Worktable": 0,
+        "fact_movimientos_bancarios": 551
+      },
+      "cpu_ms": 87,
+      "total_ms": 23,
+      "operadores": [
+        "Clustered Index Seek en dim_fecha (pk_dim_fecha)",
+        "Clustered Index Scan en fact_conciliacion (pk_fact_conciliacion)",
+        "Clustered Index Seek en dim_banco_cuenta (pk_dim_banco_cuenta)",
+        "Index Seek en fact_movimientos_bancarios (uq_fact_movimientos_linea)",
+        "Clustered Index Seek en fact_movimientos_bancarios (pk_fact_movimientos_bancarios)"
+      ]
+    }
+  },
+  "solo_indice": {
+    "Q2": {
+      "titulo": "Evolución mensual de la cartera (CTE recursiva)",
+      "lecturas_logicas": 1197072,
+      "por_tabla": {
+        "Worktable": 166,
+        "fact_cobranzas": 1193309,
+        "Workfile": 0,
+        "fact_facturas": 3129,
+        "dim_fecha": 468
+      },
+      "cpu_ms": 2020,
+      "total_ms": 2024,
+      "operadores": [
+        "Clustered Index Scan en dim_fecha (pk_dim_fecha)",
+        "Index Seek en fact_facturas (fx_fact_facturas_ar_emision)",
+        "Index Seek en fact_cobranzas (ix_fact_cobranzas_factura)"
+      ]
+    }
+  },
+  "despues": {
+    "Q1": {
+      "titulo": "Flujo de caja diario por moneda",
+      "lecturas_logicas": 145,
+      "por_tabla": {
+        "fact_movimientos_bancarios": 121,
+        "Worktable": 0,
+        "dim_fecha": 10,
+        "dim_moneda": 10,
+        "fact_saldo_bancario_mensual": 4
+      },
+      "cpu_ms": 16,
+      "total_ms": 15,
+      "operadores": [
+        "Clustered Index Scan en fact_saldo_bancario_mensual (pk_fact_saldo_bancario_mensual)",
+        "Index Scan en dim_moneda (uq_dim_moneda_codigo) — batch mode",
+        "Clustered Index Seek en dim_moneda (pk_dim_moneda)",
+        "Index Seek en dim_fecha (ux_dim_fecha_fecha)",
+        "Index Scan en fact_movimientos_bancarios (ncci_fact_movimientos_bancarios) — batch mode"
+      ]
+    },
+    "Q2": {
+      "titulo": "Evolución mensual de la cartera (CTE recursiva)",
+      "lecturas_logicas": 3638,
+      "por_tabla": {
+        "Worktable": 73,
+        "Workfile": 0,
+        "fact_facturas": 3129,
+        "fact_cobranzas": 358,
+        "dim_fecha": 78
+      },
+      "cpu_ms": 1166,
+      "total_ms": 1166,
+      "operadores": [
+        "Clustered Index Scan en dim_fecha (pk_dim_fecha)",
+        "Index Scan en fact_cobranzas (ix_fact_cobranzas_factura)",
+        "Index Seek en fact_facturas (fx_fact_facturas_ar_emision)"
+      ]
+    },
+    "Q3": {
+      "titulo": "Partidas pendientes de conciliación",
+      "lecturas_logicas": 609,
+      "por_tabla": {
+        "dim_fecha": 78,
+        "fact_conciliacion": 11,
+        "dim_banco_cuenta": 2,
+        "Worktable": 0,
+        "fact_movimientos_bancarios": 518
+      },
+      "cpu_ms": 3,
+      "total_ms": 4,
+      "operadores": [
+        "Clustered Index Scan en dim_banco_cuenta (pk_dim_banco_cuenta) — batch mode",
+        "Index Seek en fact_conciliacion (fx_fact_conciliacion_pendientes) — batch mode",
+        "Clustered Index Seek en dim_fecha (pk_dim_fecha) — batch mode",
+        "Clustered Index Seek en dim_fecha (pk_dim_fecha)",
+        "Index Seek en fact_movimientos_bancarios (uq_fact_movimientos_linea)",
+        "Clustered Index Seek en fact_movimientos_bancarios (pk_fact_movimientos_bancarios)"
+      ]
+    }
+  },
+  "volumen": {
+    "fact_movimientos_bancarios": 113244,
+    "fact_facturas": 119972,
+    "fact_cobranzas": 52327,
+    "fact_pagos": 55545,
+    "fact_conciliacion": 107956
+  }
+}

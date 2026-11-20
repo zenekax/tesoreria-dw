@@ -17,7 +17,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 4 | ETL en T-SQL | ✅ |
 | 5 | Calidad de datos | ✅ |
 | 6 | Conciliación y análisis | ✅ |
-| 7 | Performance | ⏳ |
+| 7 | Performance | ✅ (falta narrativa final en Fase 10) |
 | 8 | Seguridad | ⏳ |
 | 9 | Capa de consumo (Power BI) | ⏳ |
 | 10 | Cierre | ⏳ |
@@ -333,3 +333,20 @@ independiente en Python; el **saldo de cierre del flujo de caja difiere del sald
 las líneas en cuarentena**; los 5 pagos atípicos y los 3 dobles pagos plantados se detectan sin falsos positivos; el
 PIVOT dinámico suma lo mismo que el hecho y **rechaza intentos de inyección** (`'PAGOS; DROP TABLE ...'`,
 `N'ARS'' OR 1=1 --'`); la serie recursiva coincide con el aging al cierre.
+
+## Fase 7: performance
+
+Medido con `python/medir_performance.py` sobre `TesoreriaDW_perf` (escala 20: 113 mil movimientos, 120 mil facturas),
+mediana de 5 corridas con `SET STATISTICS IO, TIME ON` y planes reales guardados en `sql/07_performance/planes/`.
+Tabla completa y operadores del plan en [sql/07_performance/resultados.md](sql/07_performance/resultados.md).
+
+| Consulta | Cambio | Lecturas lógicas antes → después |
+|---|---|---|
+| Q1 flujo de caja diario | columnstore no agrupado (batch mode) | 4.087 → 145 (**28x**) |
+| Q2 evolución de cartera | índice NC con INCLUDE + filtrado **solo** (1,1x) y **reescritura** con suma acumulada + `MAXDOP 1` | 1.302.345 → 3.638 (**358x**) |
+| Q3 pendientes de conciliación | índice filtrado (y `IN` en vez de `LIKE` para que el filtro se use) | 6.553 → 609 (**11x**) |
+
+Hallazgos: el índice solo no arregla una subconsulta correlacionada (Q2); una reescritura con unión por desigualdad fue
+**peor** (spool, 20 s de CPU) y se descartó midiendo. A escala 20 la validación de calidad tardaba 151 s y perdía
+detecciones (reglas de "existencia"): las reglas ERP vs. banco pasaron a usar la conciliación 1 a 1 → **5,7 s y recall
+174/174 sin falsos positivos**. La conciliación con orden fecha-antes-que-diferencia da 100% en 107.701 pares.

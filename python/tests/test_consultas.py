@@ -217,3 +217,14 @@ def test_evolucion_recursiva_coherente_con_aging(entorno):
     assert [str(s["cierre"]) for s in serie][0] == "2025-11-30" and str(serie[-1]["cierre"]) == "2026-10-31"
     assert len(serie) == 12
     assert serie[-1]["facturas_abiertas"] == sum(t["facturas"] for t in tramos)
+
+
+def test_q2_original_reescrita_y_analisis_dan_lo_mismo(entorno):
+    """La Fase 7 reescribió la evolución de cartera para que lea 250 veces menos: el resultado
+    tiene que ser idéntico al de la versión original (subconsulta correlacionada)."""
+    with sa() as cn:
+        (original,) = ejecutar_script(cn, "sql/07_performance/02_q2_evolucion_cartera.sql", BASE_TEST)
+        (reescrita,) = ejecutar_script(cn, "sql/07_performance/02b_q2_evolucion_cartera_reescrita.sql", BASE_TEST)
+    (analisis,) = correr("07_evolucion_cartera_recursiva.sql")
+    clave = lambda f: (str(f["cierre"]), f["facturas_abiertas"], f["cartera_usd"], f["vencida_30_usd"])  # noqa: E731
+    assert [clave(f) for f in original] == [clave(f) for f in reescrita] == [clave(f) for f in analisis]
