@@ -12,7 +12,6 @@ from __future__ import annotations
 import csv
 import os
 import shutil
-import subprocess
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -24,42 +23,17 @@ import cargar_staging as cs  # noqa: E402
 import db  # noqa: E402
 import generar_datos as gd  # noqa: E402
 
-BASE_TEST = "TesoreriaDW_test"
+from conftest import BASE_TEST, codigo_error  # noqa: E402
+
 TABLAS = ["banks", "bank_accounts", "counterparties", "fx_rates", "invoices", "payments",
           "collections", "bank_statements", "bank_balances"]
 
 
-def _sa():
-    return db.conectar(database="master", autocommit=True)
-
-
-def _borrar_base():
-    with _sa() as cn:
-        cn.execute(f"IF DB_ID('{BASE_TEST}') IS NOT NULL BEGIN "
-                   f"ALTER DATABASE [{BASE_TEST}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; "
-                   f"DROP DATABASE [{BASE_TEST}]; END")
-
-
-def _desplegar():
-    r = subprocess.run([str(db.RAIZ / "scripts" / "run_sql.sh")], env={**os.environ, "DB_NAME": BASE_TEST},
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stdout + r.stderr
-
-
 @pytest.fixture(scope="module")
-def entorno(tmp_path_factory):
-    import pyodbc
-    try:
-        _sa().close()
-    except pyodbc.Error as e:  # solo errores de conexión: un bug de código tiene que FALLAR, no saltearse
-        pytest.skip(f"SQL Server no disponible: {e}")
-    _borrar_base()
-    _desplegar()
-    _desplegar()  # los scripts de despliegue tienen que poder correr dos veces seguidas
+def entorno(base_test, tmp_path_factory):
     datos = tmp_path_factory.mktemp("datos")
     manifiesto = gd.generar(datos, escala=0.3)
     yield datos, manifiesto
-    _borrar_base()
 
 
 def etl():
@@ -223,14 +197,12 @@ def test_usuario_etl_tiene_minimo_privilegio(entorno, sentencia):
     """Tiene que fallar POR PERMISOS (no por un error de sintaxis que haría pasar el test igual).
     229/262/15247 = permiso denegado; 3701/1088 = "no existe o no tenés permiso" (SQL Server
     no le confirma la existencia de un objeto a quien no tiene acceso)."""
-    import re
     import pyodbc
     with etl() as cn:
         with pytest.raises(pyodbc.Error) as exc:
             cn.execute(sentencia)
         cn.rollback()
-    codigo = int(re.search(r"\((\d+)\)\s*\(SQLExecDirectW\)", str(exc.value)).group(1))
-    assert codigo in {229, 262, 1088, 3701, 15247}, str(exc.value)
+    assert codigo_error(exc.value) in {229, 262, 1088, 3701, 15247}, str(exc.value)
 
 
 def test_la_carga_no_usa_sa(entorno):

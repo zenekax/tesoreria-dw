@@ -13,7 +13,7 @@ en ARS, USD, BRL, MXN y COP. ETL en Python + T-SQL, control de calidad, segurida
 | 0 | Entorno: Docker, Python, Git | ✅ |
 | 1 | Datos sintéticos con errores inyectados | ✅ |
 | 2 | Staging (`stg`) | ✅ |
-| 3 | Modelo dimensional (`dw`) | ⏳ |
+| 3 | Modelo dimensional (`dw`) | ✅ |
 | 4 | ETL en T-SQL | ⏳ |
 | 5 | Calidad de datos | ⏳ |
 | 6 | Conciliación y análisis | ⏳ |
@@ -64,7 +64,7 @@ docker compose up -d --wait
 ./scripts/setup_python.sh && source .venv/bin/activate
 ```
 
-Desplegar la base (base, schemas, usuario ETL y tablas de staging; idempotente):
+Desplegar la base (base, schemas, usuario ETL, staging y modelo dimensional; idempotente):
 
 ```bash
 scripts/run_sql.sh
@@ -108,8 +108,10 @@ scripts/setup_python.sh venv + dependencias + workaround OpenSSL en Mac (idempot
 scripts/_tdw_openssl.py  relanzador que instala setup_python.sh en el venv (solo macOS)
 sql/00_setup/          base + schemas stg, dw, audit, sec + login tdw_etl / rol_etl
 sql/01_staging/        tablas stg.* y bitácora audit.carga_staging
+sql/02_dw/              esquema estrella: 5 dimensiones, 7 hechos, calendario y datos de referencia
 docs/REQUISITOS.md     requisito del puesto -> dónde se demuestra
 docs/datos-sinteticos.md  archivos, realismo de tesorería, errores inyectados y decisiones
+docs/modelo.md         diagrama, matriz de bus, grano de cada hecho y decisiones de modelado
 ```
 
 ## Decisiones de la Fase 0
@@ -178,3 +180,32 @@ Verificado: 17 tests de integración (copia fiel fila por fila contra los CSV, c
 inyectados presente en staging por archivo y línea, re-ejecución sin duplicados, archivo corregido,
 filas borradas, encabezado inválido, valor demasiado largo, permisos), y reconstrucción completa desde
 cero (contenedor y volumen borrados): staging queda idéntico.
+
+## Fase 3: modelo dimensional
+
+Esquema estrella en `dw` (detalle, diagrama Mermaid y matriz de bus en [docs/modelo.md](docs/modelo.md)):
+
+| Dimensiones | Hechos | Tipo | Grano (una fila por...) |
+|---|---|---|---|
+| `dim_fecha` (AAAAMMDD, 2019–2027) | `fact_facturas` | transacción | factura AP/AR |
+| `dim_moneda` | `fact_pagos` | transacción | pago ejecutado |
+| `dim_contraparte` (**SCD2**) | `fact_cobranzas` | transacción | cobranza recibida |
+| `dim_banco_cuenta` | `fact_movimientos_bancarios` | transacción | línea del extracto (monto con signo) |
+| `dim_tipo_movimiento` | `fact_saldo_bancario_mensual` | snapshot periódico | cuenta × mes |
+| | `fact_tipo_cambio` | snapshot periódico | moneda × día hábil |
+| | `fact_conciliacion` | **snapshot acumulativo** | partida de conciliación (libro, banco o ambos) |
+
+Decisiones principales:
+- **SCD2 en contrapartes** (riesgo, plazo, segmento, estado) con `vigente_desde/hasta`, hashes persistidos para
+  detectar cambios e **índice único filtrado** que garantiza una sola versión vigente.
+- **`fact_conciliacion` con grano "partida"**, como la planilla de conciliación bancaria: conciliadas, con
+  diferencia, pendientes en banco y pendientes en libros. Los CHECK impiden estados incoherentes (por ejemplo,
+  "conciliada" sin línea del banco) y los únicos filtrados impiden que una línea concilie dos pagos.
+- **Integridad en la base, no solo en el ETL**: 30 FK verificadas, 25 CHECK de negocio (montos, fechas,
+  saldo que cuadra) y miembros `-1`/`-2` en lugar de NULL.
+- `DECIMAL(19,2)` + TC + monto en USD en cada hecho; `dim_fecha` generada con `GENERATE_SERIES` (SQL Server 2022),
+  sin depender del idioma ni de `SET DATEFIRST`.
+
+Verificado: 56 tests (estructura, calendario, datos estáticos y 27 reglas probadas con **control positivo**:
+la fila válida entra y la misma fila con un campo roto falla con el código esperado). Contraprueba: al sacar dos
+reglas del DDL fallaron exactamente sus dos tests. Despliegue completo dos veces seguidas sin errores.
