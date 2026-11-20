@@ -48,6 +48,15 @@ def base_test():
     _borrar_base()
 
 
+@pytest.fixture(scope="module")
+def base_limpia(base_test):
+    """Base recién desplegada para un módulo que CARGA datos: así ningún módulo depende de lo
+    que dejó otro, y los tests pasan en cualquier orden."""
+    _borrar_base()
+    desplegar()
+    return base_test
+
+
 def codigo_error(exc: Exception) -> int:
     """Número de error de SQL Server dentro de un pyodbc.Error (ej. 547 = viola CHECK/FK)."""
     m = re.search(r"\((\d+)\)\s*\(SQL(?:ExecDirect|Execute)W\)", str(exc))

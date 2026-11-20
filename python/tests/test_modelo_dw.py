@@ -60,7 +60,9 @@ BASE = {
     "fact_saldo_bancario_mensual": dict(banco_cuenta_key=-1, fecha_cierre_key=20260331, moneda_key=1,
                                         saldo_inicial=1000, total_creditos=500, total_debitos=-300,
                                         saldo_final=1200, cantidad_movimientos=10),
-    "fact_tipo_cambio": dict(fecha_key=20260316, moneda_key=1, tipo_cambio_por_usd=1500, fuente="TEST"),
+    # 2019: fuera del período de los datos, para no chocar con cotizaciones reales si otro
+    # módulo de tests ya cargó el DW (estos tests no pueden depender del orden de ejecución).
+    "fact_tipo_cambio": dict(fecha_key=20190107, moneda_key=1, tipo_cambio_por_usd=1500, fuente="TEST"),
     "dim_contraparte": dict(contraparte_id="T-CP-1", tipo_contraparte="PROVEEDOR", razon_social="Prueba S.A.",
                             pais="AR", moneda_default="ARS", segmento="PYME", calificacion_riesgo="BAJO",
                             plazo_pago_dias=30, activa=1, vigente_desde="2025-11-01"),
