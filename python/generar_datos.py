@@ -360,7 +360,15 @@ class Generador:
 
     def _nombre_empresa(self, pais: str, sufijo: str, usados: set) -> str:
         while True:
-            base = re.sub(r"\s+(Inc|LLC|Ltd|S/A|S\.A\.|Ltda)\.?$", "", self.fakers[pais].company()).strip(" ,")
+            # Se sacan TODOS los sufijos societarios que trae Faker (a veces vienen dos, como
+            # "A.C. S.A. de C.V."), para poner después el del país una sola vez.
+            base = self.fakers[pais].company()
+            while True:
+                limpio = re.sub(r"[\s,]+(Inc|LLC|Ltd|S/A|S\.A\.( de C\.V\.)?|Ltda|A\.C\.|S\.C\.|S\.A\.S\.|ME|EIRELI|PLC|Group)\.?$",
+                                "", base).strip(" ,-")
+                if limpio == base:
+                    break
+                base = limpio
             # Algunos locales de Faker mezclan inglés ("Gomez, Ruiz and Diaz"): se castellaniza.
             base = base.replace(" and ", {"BR": " e ", "US": " and "}.get(pais, " y "))
             nombre = f"{base} {sufijo}"

@@ -94,7 +94,7 @@ def cargado(base_limpia, tmp_path_factory):
 # --------------------------------------------------------------------------- primera carga
 def test_todos_los_pasos_ok(cargado):
     _, _, resumen = cargado
-    assert [r["estado"] for r in resumen] == ["OK"] * 10
+    assert [r["estado"] for r in resumen] == ["OK"] * 11   # 9 cargas + conciliación + orquestador
     assert resumen[0]["proceso"] == "dw.usp_run_etl"
 
 
@@ -102,8 +102,8 @@ def test_conteos_cuadran_por_paso(cargado):
     """Total de control de cada paso: todo lo leído se explica (entró, se descartó o era duplicado)."""
     _, _, resumen = cargado
     for r in resumen[1:]:
-        if r["proceso"] in ("dw.usp_load_dim_contraparte", "dw.usp_load_fact_conciliacion"):
-            continue  # la dimensión SCD2 inserta versiones; la conciliación lee desde el DW, no de staging
+        if r["proceso"] in ("dw.usp_load_dim_contraparte", "dw.usp_load_fact_conciliacion", "dw.usp_conciliar"):
+            continue  # SCD2 inserta versiones; la conciliación lee desde el DW, no de staging
         assert r["filas_leidas"] == (r["filas_insertadas"] + r["filas_actualizadas"] + r["filas_descartadas"]
                                      + r["filas_duplicadas"]), r
 
@@ -212,8 +212,13 @@ def test_partidas_de_conciliacion(cargado):
         transferencias = cn.execute("SELECT COUNT(*) FROM dw.fact_movimientos_bancarios m JOIN dw.dim_tipo_movimiento t "
                                     "ON t.tipo_movimiento_key = m.tipo_movimiento_key WHERE t.es_conciliable = 1").fetchone()[0]
         estados = {r[0] for r in cn.execute("SELECT DISTINCT estado FROM dw.fact_conciliacion")}
-    assert partidas == {"PAGO": pagos, "COBRANZA": cobranzas, "BANCO": transferencias}
-    assert estados == {"PENDIENTE_EN_BANCO", "PENDIENTE_EN_LIBROS"}, "el matching es de la Fase 6"
+        conciliadas = cn.execute("SELECT COUNT(*) FROM dw.fact_conciliacion WHERE linea_extracto_id IS NOT NULL "
+                                 "AND origen <> 'BANCO'").fetchone()[0]
+    # Cada pago y cobranza tiene su partida; cada transferencia del banco está en una partida
+    # propia (sin pareja) o dentro de la partida del pago/cobranza que concilió (Fase 6).
+    assert partidas["PAGO"] == pagos and partidas["COBRANZA"] == cobranzas
+    assert partidas["BANCO"] + conciliadas == transferencias
+    assert estados <= {"CONCILIADA", "CONCILIADA_CON_DIFERENCIA", "PENDIENTE_EN_BANCO", "PENDIENTE_EN_LIBROS"}
 
 
 # --------------------------------------------------------------------------- idempotencia e incremental
