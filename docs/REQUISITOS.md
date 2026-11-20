@@ -26,14 +26,15 @@ Fuente: aviso de búsqueda (SQL Server en análisis, desarrollo o integración d
 | ETL/ELT | Python → staging (EL) y T-SQL (T): es ELT | Fases 2, 4 |
 | Azure / Microsoft Fabric / Azure AI Search | **Extensión posterior:** migrar DW a Azure SQL Database o Fabric Warehouse; conectar con el proyecto RAG (Azure AI Search sobre documentación del DW) | Fuera de alcance v1 |
 | Dynamics 365 Finance & Operations | Estudiar conceptos y módulos (cuentas por pagar/cobrar, diarios, dimensiones financieras) y mapearlos al modelo; no se implementa | Estudio |
-| C# / .NET y herramientas de administración de SQL Server | Alcance mínimo: SSMS/Azure Data Studio, SQL Agent (job simulado), backup/restore documentado. C# opcional | Opcional |
+| C# / .NET y herramientas de administración de SQL Server | Alcance mínimo: SSMS o VS Code (extensión mssql), SQL Agent (job simulado), backup/restore documentado. C# opcional | Opcional (no hecho) |
 | Formación afín (Sistemas / Datos) | Certificaciones sugeridas: PL-300, DP-900 (verificar vigencia en Microsoft Learn) | Paralelo |
 | Inglés técnico | README y `docs/` clave en inglés (versión bilingüe del README) | Fase 10 |
 
 ## Definición de "terminado" (v1)
-- [ ] Se levanta en 3 comandos desde cero.
-- [ ] Los tests detectan el 100% de los errores inyectados.
-- [ ] Hay al menos 3 optimizaciones con evidencia antes/después.
-- [ ] RLS y masking probados con `EXECUTE AS`.
-- [ ] README con diagrama, capturas y resultados.
-- [ ] Repo público en GitHub (`zenekax/tesoreria-dw`) y enlazado desde el portfolio y el CV.
+- [x] Se levanta en 3 comandos desde cero (`git clone`, `cd`, `./scripts/levantar.sh`; probado desde un clon limpio).
+- [x] Los tests detectan el 100% de los errores inyectados (174/174, también a escala 20).
+- [x] Hay al menos 3 optimizaciones con evidencia antes/después (`sql/07_performance/resultados.md`).
+- [x] RLS y masking probados con `EXECUTE AS` (`sql/05_security/04_pruebas_permisos.sql` y 31 tests).
+- [ ] README con diagrama, capturas y resultados: diagrama y resultados listos; **capturas pendientes** (Power BI requiere Windows, ver `docs/powerbi.md`).
+- [ ] Repo público en GitHub (`zenekax/tesoreria-dw`) y enlazado desde el portfolio y el CV: **pendiente** (decisión de Ignacio).
+- [ ] Ignacio reconstruyó el proyecto con `docs/guia-replica.md` y puede explicar cada script: **pendiente**.
